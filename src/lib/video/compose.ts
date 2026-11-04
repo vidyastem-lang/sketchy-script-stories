@@ -1,0 +1,324 @@
+// Browser-only video composition pipeline (ffmpeg.wasm + procedural background
+// music). Import dynamically from event handlers — never into the SSR graph.
+
+import { FFmpeg } from "@ffmpeg/ffmpeg";
+import { toBlobURL, fetchFile } from "@ffmpeg/util";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import type { Database } from "@/integrations/supabase/types";
+import type { Mood } from "@/lib/storyboard";
+
+const FFMPEG_VERSION = "0.12.15";
+const CORE_BASE = "https://unpkg.com/@ffmpeg/core@0.12.10/dist/umd";
+const WORKER_URL = `https://unpkg.com/@ffmpeg/ffmpeg@${FFMPEG_VERSION}/dist/umd/814.ffmpeg.js`;
+
+export interface ComposeSceneInput {
+  sceneIndex: number;
+  imagePath: string | null;
+  clipPaths: string[]; // narration first, then dialogue clips in order
+}
+
+export interface ComposeOptions {
+  resolution: "720p" | "1080p";
+  bgmEnabled: boolean;
+  mood: Mood;
+  onProgress?: (ratio: number, label: string) => void;
+}
+
+export interface ComposeResult {
+  blob: Blob;
+  durationSec: number;
+  width: number;
+  height: number;
+}
+
+const FPS = 24;
+
+async function loadFFmpeg(onProgress?: (r: number, l: string) => void): Promise<FFmpeg> {
+  const ffmpeg = new FFmpeg();
+  ffmpeg.on("progress", ({ progress }) => {
+    if (Number.isFinite(progress)) onProgress?.(0.05 + 0.9 * Math.min(1, Math.max(0, progress)), "Encoding video");
+  });
+  const [coreURL, wasmURL, classWorkerURL] = await Promise.all([
+    toBlobURL(`${CORE_BASE}/ffmpeg-core.js`, "text/javascript"),
+    toBlobURL(`${CORE_BASE}/ffmpeg-core.wasm`, "application/wasm"),
+    toBlobURL(WORKER_URL, "text/javascript"),
+  ]);
+  await ffmpeg.load({ coreURL, wasmURL, classWorkerURL });
+  return ffmpeg;
+}
+
+async function downloadAsset(supabase: SupabaseClient<Database>, bucket: string, path: string): Promise<Blob | null> {
+  const { data, error } = await supabase.storage.from(bucket).download(path);
+  if (error || !data) return null;
+  return data;
+}
+
+function placeholderImage(index: number): Promise<Blob> {
+  const canvas = document.createElement("canvas");
+  canvas.width = 1536;
+  canvas.height = 1024;
+  const ctx = canvas.getContext("2d")!;
+  const g = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
+  g.addColorStop(0, "#1b1f3a");
+  g.addColorStop(1, "#2c3f66");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "rgba(240, 200, 120, 0.85)";
+  ctx.font = "600 96px Manrope, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(`Scene ${index + 1}`, canvas.width / 2, canvas.height / 2);
+  return new Promise((resolve) => canvas.toBlob((b) => resolve(b!), "image/png"));
+}
+
+async function measureAudio(blob: Blob): Promise<number> {
+  const ctx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+  try {
+    const buf = await ctx.decodeAudioData(await blob.arrayBuffer());
+    return buf.duration;
+  } finally {
+    void ctx.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Procedural background music (Web Audio) — warm pads + soft arpeggios.
+// ---------------------------------------------------------------------------
+
+const MOODS: Record<string, { root: number; chords: number[][]; step: number; padLevel: number }> = {
+  warm: { root: 261.63, chords: [[0, 4, 7], [-5, 0, 4], [-3, 2, 5], [2, 5, 9]], step: 0.5, padLevel: 0.11 },
+  epic: { root: 293.66, chords: [[0, 3, 7], [-2, 3, 7], [-4, 0, 5], [-5, 2, 7]], step: 0.4, padLevel: 0.13 },
+  playful: { root: 392.0, chords: [[0, 4, 9], [2, 5, 9], [-3, 0, 4], [-1, 2, 7]], step: 0.25, padLevel: 0.09 },
+  calm: { root: 220.0, chords: [[0, 4, 7, 11], [-5, 0, 4, 9], [-7, 0, 5], [-3, 2, 7]], step: 0.75, padLevel: 0.12 },
+  mysterious: { root: 164.81, chords: [[0, 3, 7, 10], [-2, 3, 8], [-4, 1, 5], [-5, 3, 6]], step: 0.6, padLevel: 0.13 },
+};
+
+function encodeWav(buffer: AudioBuffer): Uint8Array {
+  const numCh = Math.min(2, buffer.numberOfChannels);
+  const len = buffer.length;
+  const sr = buffer.sampleRate;
+  const bytes = 44 + len * numCh * 2;
+  const view = new DataView(new ArrayBuffer(bytes));
+  const writeStr = (off: number, s: string) => {
+    for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i));
+  };
+  writeStr(0, "RIFF");
+  view.setUint32(4, bytes - 8, true);
+  writeStr(8, "WAVE");
+  writeStr(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, numCh, true);
+  view.setUint32(24, sr, true);
+  view.setUint32(28, sr * numCh * 2, true);
+  view.setUint16(32, numCh * 2, true);
+  view.setUint16(34, 16, true);
+  writeStr(36, "data");
+  view.setUint32(40, len * numCh * 2, true);
+  let off = 44;
+  const chans: Float32Array[] = [];
+  for (let c = 0; c < numCh; c++) chans.push(buffer.getChannelData(c));
+  for (let i = 0; i < len; i++) {
+    for (let c = 0; c < numCh; c++) {
+      const v = Math.max(-1, Math.min(1, chans[c][i]));
+      view.setInt16(off, v < 0 ? v * 0x8000 : v * 0x7fff, true);
+      off += 2;
+    }
+  }
+  return new Uint8Array(view.buffer);
+}
+
+export async function generateBgm(mood: Mood, durationSec: number): Promise<Uint8Array> {
+  const conf = MOODS[mood] ?? MOODS.warm;
+  const sr = 44100;
+  const ctx = new OfflineAudioContext(2, Math.ceil(sr * durationSec), sr);
+  const master = ctx.createGain();
+  master.gain.value = 0.55;
+  master.connect(ctx.destination);
+
+  const chordLen = 4;
+  let ci = 0;
+  for (let t = 0; t < durationSec - 0.5; t += chordLen, ci++) {
+    const chord = conf.chords[ci % conf.chords.length];
+    chord.forEach((semi, j) => {
+      const osc = ctx.createOscillator();
+      osc.type = j === 0 ? "sine" : "triangle";
+      osc.frequency.value = conf.root * Math.pow(2, semi / 12);
+      osc.detune.value = (j - 1) * 5;
+      const g = ctx.createGain();
+      const t1 = Math.min(t + chordLen + 1.2, durationSec);
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(conf.padLevel / chord.length, t + 1.3);
+      g.gain.setValueAtTime(conf.padLevel / chord.length, Math.max(t + 1.3, t1 - 1.3));
+      g.gain.exponentialRampToValueAtTime(0.0001, t1);
+      osc.connect(g);
+      g.connect(master);
+      osc.start(t);
+      osc.stop(t1 + 0.05);
+    });
+  }
+
+  for (let t = 0.6; t < durationSec - 0.4; t += conf.step) {
+    const chord = conf.chords[Math.floor(t / chordLen) % conf.chords.length];
+    const semi = chord[Math.floor(t / conf.step) % chord.length] + 12;
+    const osc = ctx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.value = conf.root * Math.pow(2, semi / 12);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.05, t + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + Math.max(0.3, conf.step * 1.4));
+    osc.connect(g);
+    g.connect(master);
+    osc.start(t);
+    osc.stop(t + conf.step * 1.6 + 0.2);
+  }
+
+  return encodeWav(await ctx.startRendering());
+}
+
+// ---------------------------------------------------------------------------
+// Composition
+// ---------------------------------------------------------------------------
+
+export async function composeVideo(
+  supabase: SupabaseClient<Database>,
+  videoId: string,
+  scenes: ComposeSceneInput[],
+  opts: ComposeOptions,
+): Promise<ComposeResult> {
+  const W = opts.resolution === "1080p" ? 1920 : 1280;
+  const H = opts.resolution === "1080p" ? 1080 : 720;
+  const scenesSorted = [...scenes].sort((a, b) => a.sceneIndex - b.sceneIndex);
+  const report = (r: number, l: string) => opts.onProgress?.(r, l);
+
+  report(0.01, "Downloading scene art");
+  // Gather image bytes
+  const imageFiles: { name: string; bytes: Uint8Array }[] = [];
+  for (let i = 0; i < scenesSorted.length; i++) {
+    const s = scenesSorted[i];
+    let blob = s.imagePath ? await downloadAsset(supabase, "scene-assets", s.imagePath) : null;
+    if (!blob) blob = await placeholderImage(s.sceneIndex);
+    imageFiles.push({ name: `scene${i}.png`, bytes: new Uint8Array(await blob.arrayBuffer()) });
+  }
+
+  report(0.08, "Downloading voiceover");
+  // Gather audio clips with durations
+  const clipFiles: { name: string; bytes: Uint8Array; sceneIdx: number; dur: number }[] = [];
+  let clipCounter = 0;
+  const sceneClips: number[][] = scenesSorted.map(() => []);
+  for (let i = 0; i < scenesSorted.length; i++) {
+    for (const p of scenesSorted[i].clipPaths) {
+      const blob = await downloadAsset(supabase, "scene-assets", p);
+      if (!blob) continue;
+      const dur = await measureAudio(blob);
+      const k = clipCounter++;
+      clipFiles.push({ name: `clip${k}.mp3`, bytes: new Uint8Array(await blob.arrayBuffer()), sceneIdx: i, dur });
+      sceneClips[i].push(k);
+    }
+  }
+
+  // Scene durations & timeline
+  const sceneDur: number[] = scenesSorted.map((_, i) => {
+    const total = sceneClips[i].reduce((acc, k) => acc + clipFiles[k].dur, 0);
+    return Math.min(30, Math.max(3, sceneClips[i].length > 0 ? total + 0.9 : 4.5));
+  });
+  const sceneStart: number[] = [];
+  let cursor = 0;
+  for (const d of sceneDur) {
+    sceneStart.push(cursor);
+    cursor += d;
+  }
+  const totalSec = cursor;
+
+  // Background music
+  const bgm = opts.bgmEnabled ? await generateBgm(opts.mood, totalSec) : null;
+
+  const ffmpeg = await loadFFmpeg(onProgressSafe);
+
+  function onProgressSafe(r: number, l: string) {
+    report(r, l);
+  }
+
+  report(0.12, "Preparing encoder");
+  for (const f of imageFiles) await ffmpeg.writeFile(f.name, f.bytes);
+  for (const f of clipFiles) await ffmpeg.writeFile(f.name, f.bytes);
+  if (bgm) await ffmpeg.writeFile("bgm.wav", bgm);
+
+  // Build filter graph
+  const IW = Math.round(W * 1.35);
+  const IH = Math.round(H * 1.35);
+  const parts: string[] = [];
+  const vLabels: string[] = [];
+  scenesSorted.forEach((_, i) => {
+    const frames = Math.max(1, Math.round(sceneDur[i] * FPS));
+    const rate = (0.22 / frames).toFixed(6);
+    let motion: string;
+    switch (i % 3) {
+      case 0:
+        motion = `z='min(1+${rate}*on,1.22)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
+        break;
+      case 1:
+        motion = `z='1.18':x='(iw-iw/zoom)*min(1\\,on/${frames})':y='ih/2-(ih/zoom/2)'`;
+        break;
+      default:
+        motion = `z='max(1.22-${rate}*on,1.0)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
+    }
+    parts.push(
+      `[${i}:v]scale=${IW}:${IH}:force_original_aspect_ratio=increase,crop=${IW}:${IH},zoompan=${motion}:d=1:s=${W}x${H}:fps=${FPS},setsar=1[v${i}]`,
+    );
+    vLabels.push(`[v${i}]`);
+  });
+  parts.push(
+    `${vLabels.join("")}concat=n=${scenesSorted.length}:v=1:a=0[vcat]`,
+    `[vcat]fade=t=in:st=0:d=0.5,fade=t=out:st=${Math.max(0, totalSec - 1.2).toFixed(2)}:d=1.2,format=yuv420p[vout]`,
+  );
+
+  // Audio chain
+  const aLabels: string[] = [];
+  clipFiles.forEach((f, k) => {
+    const delayMs = Math.round((sceneStart[f.sceneIdx] + 0.35 + sceneClips[f.sceneIdx].slice(0, sceneClips[f.sceneIdx].indexOf(k)).reduce((a, kk) => a + clipFiles[kk].dur, 0)) * 1000);
+    parts.push(`[${imageFiles.length + k}:a]aresample=44100,adelay=${delayMs}:all=1,apad=whole_dur=${sceneDur[f.sceneIdx].toFixed(3)}[a${k}]`);
+    aLabels.push(`[a${k}]`);
+  });
+  let bgmIdx = -1;
+  if (bgm) {
+    bgmIdx = imageFiles.length + clipFiles.length;
+    parts.push(`[${bgmIdx}:a]volume=0.16[abgm]`);
+    aLabels.push("[abgm]");
+  }
+  if (aLabels.length === 0) {
+    // Silent audio fallback
+    parts.push(`anullsrc=r=44100:cl=stereo,atrim=0:${totalSec.toFixed(2)}[aout]`);
+    parts.push(`${aLabelsJoin()}amix=inputs=0[mix]`); // placeholder removed below
+  }
+
+  function aLabelsJoin(): string {
+    return aLabels.join("");
+  }
+  if (aLabels.length > 0) {
+    parts.push(`${aLabelsJoin()}amix=inputs=${aLabels.length}:duration=longest:normalize=0,atrim=0:${totalSec.toFixed(2)}[aout]`);
+  }
+
+  const args: string[] = ["-y"];
+  imageFiles.forEach((_, i) => {
+    args.push("-loop", "1", "-framerate", String(FPS), "-t", sceneDur[i].toFixed(3), "-i", `scene${i}.png`);
+  });
+  clipFiles.forEach((_, k) => args.push("-i", `clip${k}.mp3`));
+  if (bgm) args.push("-i", "bgm.wav");
+  args.push("-filter_complex", parts.join(";"), "-map", "[vout]", "-map", "[aout]");
+
+  report(0.15, "Encoding video");
+  await ffmpeg.exec([
+    ...args,
+    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24", "-pix_fmt", "yuv420p",
+    "-c:a", "aac", "-b:a", "160k", "-ar", "44100",
+    "-movflags", "+faststart", "out.mp4",
+  ]);
+
+  report(0.97, "Finalizing");
+  const data = await ffmpeg.readFile("out.mp4");
+  const bytes = data instanceof Uint8Array ? data : new TextEncoder().encode(String(data));
+  const blob = new Blob([bytes.slice().buffer as ArrayBuffer], { type: "video/mp4" });
+  return { blob, durationSec: totalSec, width: W, height: H };
+}
