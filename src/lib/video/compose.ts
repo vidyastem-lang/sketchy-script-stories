@@ -234,11 +234,7 @@ export async function composeVideo(
   // Background music
   const bgm = opts.bgmEnabled ? await generateBgm(opts.mood, totalSec) : null;
 
-  const ffmpeg = await loadFFmpeg(onProgressSafe);
-
-  function onProgressSafe(r: number, l: string) {
-    report(r, l);
-  }
+  const ffmpeg = await loadFFmpeg((r, l) => report(r, l));
 
   report(0.12, "Preparing encoder");
   for (const f of imageFiles) await ffmpeg.writeFile(f.name, f.bytes);
@@ -288,16 +284,10 @@ export async function composeVideo(
     aLabels.push("[abgm]");
   }
   if (aLabels.length === 0) {
-    // Silent audio fallback
+    // Silent audio fallback (lavfi source inside the filter graph)
     parts.push(`anullsrc=r=44100:cl=stereo,atrim=0:${totalSec.toFixed(2)}[aout]`);
-    parts.push(`${aLabelsJoin()}amix=inputs=0[mix]`); // placeholder removed below
-  }
-
-  function aLabelsJoin(): string {
-    return aLabels.join("");
-  }
-  if (aLabels.length > 0) {
-    parts.push(`${aLabelsJoin()}amix=inputs=${aLabels.length}:duration=longest:normalize=0,atrim=0:${totalSec.toFixed(2)}[aout]`);
+  } else {
+    parts.push(`${aLabels.join("")}amix=inputs=${aLabels.length}:duration=longest:normalize=0,atrim=0:${totalSec.toFixed(2)}[aout]`);
   }
 
   const args: string[] = ["-y"];
