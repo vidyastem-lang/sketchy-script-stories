@@ -41,7 +41,7 @@ export const createGuestSession = createServerFn({ method: "POST" }).handler(asy
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
   const guestId = crypto.randomUUID();
   const email = `guest-${guestId}@guest.storyreel.invalid`;
-  const password = `${crypto.randomUUID()}-${crypto.randomUUID()}!`;
+  const password = `${crypto.randomUUID()}-${crypto.randomUUID().slice(0, 8)}!`;
 
   const { data: created, error: createError } = await supabaseAdmin.auth.admin.createUser({
     email,
