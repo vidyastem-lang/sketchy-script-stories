@@ -101,7 +101,7 @@ function Landing() {
               </Button>
             </div>
             <p className="mt-3 text-sm text-muted-foreground">
-              Guest sessions can generate one video. Sign in to create more.
+              Start generating videos right away — no account required.
             </p>
           </div>
           <div className="relative">
