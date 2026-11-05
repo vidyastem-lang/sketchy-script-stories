@@ -330,6 +330,13 @@ export async function composeVideo(
   const bgm = opts.bgmEnabled ? await generateBgm(opts.mood, totalSec) : null;
 
   const ffmpeg = await loadFFmpeg((r, l) => report(r, l));
+  const encoderLogs: string[] = [];
+  ffmpeg.on("log", ({ message }) => {
+    const line = message.trim();
+    if (!line) return;
+    encoderLogs.push(line);
+    if (encoderLogs.length > 50) encoderLogs.shift();
+  });
 
   try {
     report(0.12, "Preparing encoder");
@@ -425,28 +432,50 @@ export async function composeVideo(
     args.push("-filter_complex", parts.join(";"), "-map", "[vout]", "-map", "[aout]");
 
     report(0.15, "Encoding video");
-    const exitCode = await ffmpeg.exec([
-      ...args,
-      "-c:v",
-      "libx264",
-      "-preset",
-      "ultrafast",
-      "-crf",
-      "24",
-      "-pix_fmt",
-      "yuv420p",
-      "-c:a",
-      "aac",
-      "-b:a",
-      "160k",
-      "-ar",
-      "44100",
-      "-movflags",
-      "+faststart",
-      "out.mp4",
-    ]);
-    if (exitCode !== 0)
-      throw new Error(`FFmpeg could not encode the video (exit code ${exitCode}).`);
+    const diagnostics = () =>
+      encoderLogs
+        .filter((line) => /error|failed|invalid|not found|unable|cannot/i.test(line))
+        .slice(-4)
+        .join(" | ")
+        .slice(0, 360);
+    let exitCode: number;
+    try {
+      exitCode = await ffmpeg.exec([
+        ...args,
+        "-c:v",
+        "libx264",
+        "-preset",
+        "ultrafast",
+        "-crf",
+        "24",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "160k",
+        "-ar",
+        "44100",
+        "-movflags",
+        "+faststart",
+        "out.mp4",
+      ]);
+    } catch (error) {
+      const reason =
+        error instanceof Error
+          ? error.message
+          : typeof error === "string"
+            ? error
+            : "unknown encoder error";
+      const log = diagnostics();
+      throw new Error(`The video encoder stopped unexpectedly: ${reason}${log ? ` — ${log}` : ""}`);
+    }
+    if (exitCode !== 0) {
+      const log = diagnostics();
+      throw new Error(
+        `FFmpeg could not encode the video (exit code ${exitCode}).${log ? ` ${log}` : ""}`,
+      );
+    }
 
     report(0.97, "Finalizing");
     const data = await ffmpeg.readFile("out.mp4");

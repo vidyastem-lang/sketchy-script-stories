@@ -124,6 +124,24 @@ async function getStorageSignedUrl(bucket: string, path: string): Promise<string
   return data.signedUrl;
 }
 
+function describeExportError(error: unknown): string {
+  if (error instanceof Error) return error.message || error.name;
+  if (typeof error === "string" && error.trim()) return error.trim();
+  if (error && typeof error === "object") {
+    const candidate = error as { message?: unknown; name?: unknown };
+    if (typeof candidate.message === "string" && candidate.message.trim())
+      return candidate.message.trim();
+    if (typeof candidate.name === "string" && candidate.name.trim()) return candidate.name.trim();
+    try {
+      const serialized = JSON.stringify(error);
+      if (serialized && serialized !== "{}") return serialized;
+    } catch {
+      // Some browser error objects are not serializable; use the safe fallback below.
+    }
+  }
+  return "The renderer returned no error details. Check the browser console and try again.";
+}
+
 function Studio() {
   const { id } = Route.useParams();
   const queryClient = useQueryClient();
@@ -356,7 +374,9 @@ function Studio() {
       invalidate();
     } catch (err) {
       invalidate();
-      toast.error(err instanceof Error ? err.message : "Rendering failed");
+      console.error("Video export failed:", err);
+      const message = describeExportError(err);
+      toast.error(message.length > 500 ? `${message.slice(0, 497)}…` : message);
     } finally {
       setProgress(null);
     }
