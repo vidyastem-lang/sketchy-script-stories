@@ -283,23 +283,43 @@ function Studio() {
 
   async function composeAndExport() {
     const video = videoQ.data;
-    const scenes = scenesQ.data ?? [];
+    let scenes = scenesQ.data ?? [];
     if (!video || scenes.length === 0) return;
-    if (scenes.some((scene) => !scene.image_path)) {
-      toast.error("Generate scene art for every scene before exporting the video.");
-      return;
-    }
-    const missingVoice = scenes.some(
-      (scene) =>
-        (scene.narration.trim() && !scene.audio_path) ||
-        scene.dialogues.some((dialogue) => dialogue.line.trim() && !dialogue.audio_path),
-    );
-    if (missingVoice) {
-      toast.error("Generate or regenerate voiceovers for all narrated scenes before exporting.");
-      return;
-    }
     setProgress({ ratio: 0.01, label: "Preparing" });
     try {
+      const scenesWithoutArt = scenes.filter((scene) => !scene.image_path);
+      if (scenesWithoutArt.length > 0) {
+        setVideoUrl(null);
+        const imagePaths = new Map<string, string>();
+        for (const [index, scene] of scenesWithoutArt.entries()) {
+          setProgress({
+            ratio: (0.1 * (index + 1)) / scenesWithoutArt.length,
+            label: `Generating scene art ${index + 1} of ${scenesWithoutArt.length}`,
+          });
+          const generated = await sceneArtFn({ data: { sceneId: scene.id } });
+          if (!generated.image_path)
+            throw new Error(
+              `Scene ${scene.scene_index + 1} art was not saved. Try exporting again.`,
+            );
+          imagePaths.set(scene.id, generated.image_path);
+          invalidate();
+        }
+        scenes = scenes.map((scene) => ({
+          ...scene,
+          image_path: imagePaths.get(scene.id) ?? scene.image_path,
+        }));
+      }
+
+      const missingVoice = scenes.some(
+        (scene) =>
+          (scene.narration.trim() && !scene.audio_path) ||
+          scene.dialogues.some((dialogue) => dialogue.line.trim() && !dialogue.audio_path),
+      );
+      if (missingVoice) {
+        toast.error("Generate or regenerate voiceovers for all narrated scenes before exporting.");
+        return;
+      }
+
       const { composeVideo } = await import("@/lib/video/compose");
       const inputs: ComposeSceneInput[] = scenes.map((s) => ({
         sceneIndex: s.scene_index,
@@ -312,7 +332,7 @@ function Studio() {
         resolution: video.resolution,
         bgmEnabled: video.bgm_enabled,
         mood: video.mood ?? "warm",
-        onProgress: (ratio, label) => setProgress({ ratio, label }),
+        onProgress: (ratio, label) => setProgress({ ratio: 0.1 + ratio * 0.9, label }),
       });
       setVideoUrl(URL.createObjectURL(result.blob));
       const { data: userData, error: userError } = await supabase.auth.getUser();
@@ -335,6 +355,7 @@ function Studio() {
       toast.success("Video rendered and saved to your library");
       invalidate();
     } catch (err) {
+      invalidate();
       toast.error(err instanceof Error ? err.message : "Rendering failed");
     } finally {
       setProgress(null);
