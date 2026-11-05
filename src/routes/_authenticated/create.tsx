@@ -74,7 +74,9 @@ function CreatePage() {
     setBusy(true);
     try {
       const { data: userData } = await supabase.auth.getUser();
-      if (!userData.user) throw new Error("Not signed in");
+      if (!userData.user) {
+        throw new Error("Guest access is not enabled for this project yet. Please try again later.");
+      }
       const { data: video, error } = await supabase
         .from("videos")
         .insert({

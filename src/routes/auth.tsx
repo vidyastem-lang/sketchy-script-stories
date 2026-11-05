@@ -1,4 +1,4 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { Clapperboard, Loader2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
@@ -13,6 +13,9 @@ import { toast } from "sonner";
 type Mode = "signin" | "signup" | "forgot";
 
 export const Route = createFileRoute("/auth")({
+  beforeLoad: () => {
+    throw redirect({ to: "/create" });
+  },
   validateSearch: (search: Record<string, unknown>) => ({
     mode: (typeof search.mode === "string" && ["signin", "signup", "forgot"].includes(search.mode)
       ? search.mode

@@ -65,9 +65,6 @@ function Landing() {
           <span className="font-display text-lg font-bold tracking-tight">StoryReel</span>
         </div>
         <div className="flex items-center gap-3">
-          <Button variant="ghost" asChild>
-            <Link to="/auth">Sign in</Link>
-          </Button>
           <Button asChild>
             <Link to="/create">
               Start creating
@@ -95,9 +92,6 @@ function Landing() {
                 <Link to="/create">
                   Create a video — no account needed <ArrowRight className="size-4" />
                 </Link>
-              </Button>
-              <Button size="lg" variant="outline" asChild>
-                <Link to="/auth">I already have an account</Link>
               </Button>
             </div>
             <p className="mt-3 text-sm text-muted-foreground">
