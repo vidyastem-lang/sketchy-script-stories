@@ -25,4 +25,6 @@ npm run dev
 
 ## Guest video creation
 
-Guests are provisioned by a server function, so Supabase Anonymous Sign-Ins do not need to be enabled. Configure `SUPABASE_SERVICE_ROLE_KEY` as a server-only secret in the deployment environment. Never name it with a `VITE_` prefix or expose it to browser code. The server also needs `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY`, and Supabase email/password sign-in must be enabled so the server can issue the guest's normal user session.
+Guests are provisioned by a server function, so Supabase Anonymous Sign-Ins do not need to be enabled. Configure `SUPABASE_SERVICE_ROLE_KEY` as a server-only secret in the deployment environment. Never name it with a `VITE_` prefix or expose it to browser code. The server also needs `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY`, and Supabase email/password sign-in must be enabled so the server can issue the guest's normal user session. Guest identity creation is protected against repeated account provisioning (15 new sessions per network per hour); this does not limit the number of videos generated within an existing session.
+
+Apply database changes with `bun run db:migrate` (configure `LOVABLE_DB_MIGRATION_URL` as a private migration secret first). This applies owner-scoped update policies needed for storage upserts and character voice edits, and ensures the private asset buckets exist.

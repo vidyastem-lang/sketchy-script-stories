@@ -1,4 +1,4 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
@@ -12,7 +12,13 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -30,9 +36,15 @@ export const Route = createFileRoute("/_authenticated/characters")({
   head: () => ({
     meta: [
       { title: "Character library — StoryReel" },
-      { name: "description", content: "Manage the cast of characters available to your StoryReel videos." },
+      {
+        name: "description",
+        content: "Manage the cast of characters available to your StoryReel videos.",
+      },
       { property: "og:title", content: "Character library — StoryReel" },
-      { property: "og:description", content: "Manage the cast of characters available to your StoryReel videos." },
+      {
+        property: "og:description",
+        content: "Manage the cast of characters available to your StoryReel videos.",
+      },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
     ],
@@ -59,7 +71,10 @@ function CharactersPage() {
   const { data, isLoading } = useQuery({
     queryKey: ["characters"],
     queryFn: async () => {
-      const { data, error } = await supabase.from("characters").select("*").order("created_at", { ascending: false });
+      const { data, error } = await supabase
+        .from("characters")
+        .select("*")
+        .order("created_at", { ascending: false });
       if (error) throw error;
       return data as CharacterRow[];
     },
@@ -77,10 +92,12 @@ function CharactersPage() {
     setBusy(true);
     try {
       const { data: userData } = await supabase.auth.getUser();
+      if (!userData.user)
+        throw new Error("Your guest session is missing. Refresh the page and try again.");
       const { data: created, error } = await supabase
         .from("characters")
         .insert({
-          user_id: userData.user?.id,
+          user_id: userData.user.id,
           name: name.trim(),
           description: description.trim(),
           source: generateArt ? "generated" : "uploaded",
@@ -111,12 +128,21 @@ function CharactersPage() {
       if (!file) return;
       try {
         const { data: userData } = await supabase.auth.getUser();
-        const path = `${userData.user?.id}/${characterId}.png`;
+        if (!userData.user)
+          throw new Error("Your guest session is missing. Refresh the page and try again.");
+        const path = `${userData.user.id}/${characterId}.png`;
         const { error } = await supabase.storage
           .from("character-images")
           .upload(path, file, { contentType: file.type, upsert: true });
         if (error) throw error;
-        await supabase.from("characters").update({ image_path: path, source: "uploaded" }).eq("id", characterId);
+        const { error: updateError } = await supabase
+          .from("characters")
+          .update({ image_path: path, source: "uploaded" })
+          .eq("id", characterId);
+        if (updateError)
+          throw new Error(
+            "Artwork uploaded but could not be linked to the character: " + updateError.message,
+          );
         toast.success("Artwork uploaded");
         invalidate();
       } catch (err) {
@@ -154,7 +180,8 @@ function CharactersPage() {
       <main className="mx-auto max-w-5xl px-6 py-10">
         <h1 className="font-display text-3xl font-bold tracking-tight">Character library</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Your cast travels between videos — storyboard characters with matching names reuse these entries.
+          Your cast travels between videos — storyboard characters with matching names reuse these
+          entries.
         </p>
 
         {/* Add */}
@@ -163,7 +190,12 @@ function CharactersPage() {
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-1.5">
                 <Label htmlFor="char-name">Name</Label>
-                <Input id="char-name" placeholder="e.g. Mimi the fox" value={name} onChange={(e) => setName(e.target.value)} />
+                <Input
+                  id="char-name"
+                  placeholder="e.g. Mimi the fox"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                />
               </div>
               <div className="space-y-1.5">
                 <Label>Art style (for generated art)</Label>
@@ -193,7 +225,8 @@ function CharactersPage() {
             </div>
             <div className="mt-4 flex gap-2">
               <Button className="glow-gold" disabled={busy} onClick={() => addCharacter(true)}>
-                {busy ? <Loader2 className="size-4 animate-spin" /> : <Wand2 className="size-4" />} Add & generate art
+                {busy ? <Loader2 className="size-4 animate-spin" /> : <Wand2 className="size-4" />}{" "}
+                Add & generate art
               </Button>
               <Button variant="outline" disabled={busy} onClick={() => addCharacter(false)}>
                 <Plus className="size-4" /> Add without art
@@ -235,7 +268,12 @@ function CharactersPage() {
                     </Button>
                     <AlertDialog>
                       <AlertDialogTrigger asChild>
-                        <Button variant="ghost" size="icon" className="ml-auto" aria-label={`Remove ${c.name}`}>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="ml-auto"
+                          aria-label={`Remove ${c.name}`}
+                        >
                           <Trash2 className="size-4 text-destructive" />
                         </Button>
                       </AlertDialogTrigger>
@@ -279,7 +317,14 @@ function Badgeish({ source }: { source: string }) {
 function CharacterThumb({ path }: { path: string }) {
   const [url, setUrl] = useState<string | null>(null);
   if (url === null) {
-    void supabase.storage.from("character-images").createSignedUrl(path, 60 * 60 * 24).then(({ data }) => setUrl(data?.signedUrl ?? ""));
+    void supabase.storage
+      .from("character-images")
+      .createSignedUrl(path, 60 * 60 * 24)
+      .then(({ data }) => setUrl(data?.signedUrl ?? ""));
   }
-  return url ? <img src={url} alt="" className="h-full w-full object-cover" /> : <div className="h-full w-full animate-pulse bg-secondary" />;
+  return url ? (
+    <img src={url} alt="" className="h-full w-full object-cover" />
+  ) : (
+    <div className="h-full w-full animate-pulse bg-secondary" />
+  );
 }

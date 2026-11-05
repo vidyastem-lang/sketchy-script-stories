@@ -1,11 +1,17 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
+import { z } from "zod";
 import { ArrowLeft, ImageIcon, Loader2, Mic, Play, RefreshCw, Save, Wand2 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
-import { generateCharacterArt, generateSceneArt, generateSceneVoiceover } from "@/lib/ai.functions";
+import {
+  generateCharacterArt,
+  generateSceneArt,
+  generateSceneVoiceover,
+  generateStoryboard,
+} from "@/lib/ai.functions";
 import { ANIMATION_STYLES, VOICES, type Mood } from "@/lib/storyboard";
 import { AppNav } from "@/components/app-nav";
 import { Button } from "@/components/ui/button";
@@ -13,7 +19,13 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Progress } from "@/components/ui/progress";
 import {
   AlertDialog,
@@ -32,9 +44,15 @@ export const Route = createFileRoute("/_authenticated/video/$id")({
   head: () => ({
     meta: [
       { title: "Video studio — StoryReel" },
-      { name: "description", content: "Review and render your animated video in the StoryReel studio." },
+      {
+        name: "description",
+        content: "Review and render your animated video in the StoryReel studio.",
+      },
       { property: "og:title", content: "Video studio — StoryReel" },
-      { property: "og:description", content: "Review and render your animated video in the StoryReel studio." },
+      {
+        property: "og:description",
+        content: "Review and render your animated video in the StoryReel studio.",
+      },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
     ],
@@ -48,11 +66,25 @@ interface SceneRow {
   heading: string | null;
   description: string;
   narration: string;
-  dialogues: { character: string; line: string; emotion?: string; audio_path?: string | null }[];
+  dialogues: {
+    character: string;
+    line: string;
+    emotion?: string | undefined;
+    audio_path?: string | null | undefined;
+  }[];
   image_path: string | null;
   audio_path: string | null;
   emotion: string | null;
 }
+
+const editorDialoguesSchema = z.array(
+  z.object({
+    character: z.string(),
+    line: z.string(),
+    emotion: z.string().optional(),
+    audio_path: z.string().nullable().optional(),
+  }),
+);
 
 interface VideoRow {
   id: string;
@@ -85,6 +117,12 @@ function Studio() {
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [busyStep, setBusyStep] = useState<string | null>(null);
 
+  useEffect(() => {
+    return () => {
+      if (videoUrl) URL.revokeObjectURL(videoUrl);
+    };
+  }, [videoUrl]);
+
   const videoQ = useQuery({
     queryKey: ["video", id],
     queryFn: async () => {
@@ -97,9 +135,16 @@ function Studio() {
   const scenesQ = useQuery({
     queryKey: ["scenes", id],
     queryFn: async () => {
-      const { data, error } = await supabase.from("scenes").select("*").eq("video_id", id).order("scene_index");
+      const { data, error } = await supabase
+        .from("scenes")
+        .select("*")
+        .eq("video_id", id)
+        .order("scene_index");
       if (error) throw error;
-      return (data as SceneRow[]).map((s) => ({ ...s, dialogues: (s.dialogues ?? []) as SceneRow["dialogues"] }));
+      return data.map((s): SceneRow => ({
+        ...s,
+        dialogues: editorDialoguesSchema.parse(s.dialogues ?? []),
+      }));
     },
   });
 
@@ -128,13 +173,16 @@ function Studio() {
     void queryClient.invalidateQueries({ queryKey: ["video", id] });
   }
 
-  async function runStep(key: string, fn: () => Promise<unknown>) {
+  async function runStep(key: string, fn: () => Promise<unknown>): Promise<boolean> {
     setBusyStep(key);
     try {
       await fn();
+      setVideoUrl(null);
       invalidate();
+      return true;
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Step failed");
+      return false;
     } finally {
       setBusyStep(null);
     }
@@ -155,35 +203,69 @@ function Studio() {
   async function generateAllArt() {
     const scenes = scenesQ.data ?? [];
     const cast = castQ.data ?? [];
+    let failed = 0;
     for (const c of cast) {
       if (c.characters && !c.characters.image_path) {
-        await runStep(`char-${c.character_id}`, () => characterArtFn({ data: { characterId: c.character_id, style: videoQ.data?.style ?? "storybook" } }));
+        if (
+          !(await runStep(`char-${c.character_id}`, () =>
+            characterArtFn({
+              data: { characterId: c.character_id, style: videoQ.data?.style ?? "storybook" },
+            }),
+          ))
+        )
+          failed++;
       }
     }
     for (const s of scenes) {
-      await runStep(`scene-${s.id}`, () => sceneArtFn({ data: { sceneId: s.id } }));
+      if (!(await runStep(`scene-${s.id}`, () => sceneArtFn({ data: { sceneId: s.id } }))))
+        failed++;
     }
-    toast.success("All scene art generated");
+    if (failed)
+      toast.error(
+        `Art generation finished with ${failed} failed item${failed === 1 ? "" : "s"}. Retry those items.`,
+      );
+    else toast.success("All scene art generated");
   }
 
   async function generateAllVoice() {
+    let failed = 0;
     for (const s of scenesQ.data ?? []) {
-      await runStep(`voice-${s.id}`, () => voiceoverFn({ data: { sceneId: s.id } }));
+      if (!(await runStep(`voice-${s.id}`, () => voiceoverFn({ data: { sceneId: s.id } }))))
+        failed++;
     }
-    toast.success("All voiceover generated");
+    if (failed)
+      toast.error(
+        `Voiceover generation finished with ${failed} failed scene${failed === 1 ? "" : "s"}. Retry those scenes.`,
+      );
+    else toast.success("All voiceover generated");
   }
 
   async function composeAndExport() {
     const video = videoQ.data;
     const scenes = scenesQ.data ?? [];
     if (!video || scenes.length === 0) return;
+    if (scenes.some((scene) => !scene.image_path)) {
+      toast.error("Generate scene art for every scene before exporting the video.");
+      return;
+    }
+    const missingVoice = scenes.some(
+      (scene) =>
+        (scene.narration.trim() && !scene.audio_path) ||
+        scene.dialogues.some((dialogue) => dialogue.line.trim() && !dialogue.audio_path),
+    );
+    if (missingVoice) {
+      toast.error("Generate or regenerate voiceovers for all narrated scenes before exporting.");
+      return;
+    }
     setProgress({ ratio: 0.01, label: "Preparing" });
     try {
       const { composeVideo } = await import("@/lib/video/compose");
       const inputs: ComposeSceneInput[] = scenes.map((s) => ({
         sceneIndex: s.scene_index,
         imagePath: s.image_path,
-        clipPaths: [s.audio_path, ...s.dialogues.map((d) => d.audio_path ?? null)].filter((p): p is string => Boolean(p)),
+        clipPaths: [s.audio_path, ...s.dialogues.map((d) => d.audio_path ?? null)].filter(
+          (p): p is string => Boolean(p),
+        ),
       }));
       const result = await composeVideo(supabase, video.id, inputs, {
         resolution: video.resolution,
@@ -191,13 +273,23 @@ function Studio() {
         mood: video.mood ?? "warm",
         onProgress: (ratio, label) => setProgress({ ratio, label }),
       });
-      const { data: userData } = await supabase.auth.getUser();
-      const path = `${userData.user?.id}/${video.id}/final-${video.resolution}-${Date.now()}.mp4`;
+      const { data: userData, error: userError } = await supabase.auth.getUser();
+      if (userError || !userData.user)
+        throw new Error("Your session expired. Refresh the page and try exporting again.");
+      const path = `${userData.user.id}/${video.id}/final-${video.resolution}-${Date.now()}.mp4`;
       const { error } = await supabase.storage
         .from("final-videos")
         .upload(path, result.blob, { contentType: "video/mp4", upsert: false });
       if (error) throw new Error("Could not save the video: " + error.message);
-      await supabase.from("videos").update({ status: "ready", final_video_path: path }).eq("id", video.id);
+      const { error: updateError } = await supabase
+        .from("videos")
+        .update({ status: "ready", final_video_path: path })
+        .eq("id", video.id);
+      if (updateError)
+        throw new Error(
+          "The MP4 was uploaded, but its library status could not be updated: " +
+            updateError.message,
+        );
       setVideoUrl(URL.createObjectURL(result.blob));
       toast.success("Video rendered and saved to your library");
       invalidate();
@@ -210,29 +302,75 @@ function Studio() {
 
   const saveScene = useMutation({
     mutationFn: async ({ sceneId, narration }: { sceneId: string; narration: string }) => {
-      const { error } = await supabase.from("scenes").update({ narration }).eq("id", sceneId);
-      if (error) throw error;
+      const { error } = await supabase
+        .from("scenes")
+        .update({ narration, audio_path: null })
+        .eq("id", sceneId);
+      if (error) throw new Error("Could not save narration: " + error.message);
+      const { error: videoError } = await supabase
+        .from("videos")
+        .update({ status: "scenes", final_video_path: null, updated_at: new Date().toISOString() })
+        .eq("id", id);
+      if (videoError)
+        throw new Error(
+          "Narration was saved, but the video status could not be updated: " + videoError.message,
+        );
     },
     onSuccess: () => {
-      toast.success("Narration saved");
+      setVideoUrl(null);
+      toast.success("Narration saved. Regenerate voiceover before exporting for matching audio.");
       invalidate();
     },
     onError: (e) => toast.error(e instanceof Error ? e.message : "Save failed"),
   });
 
   const setVoice = useMutation({
-    mutationFn: async ({ characterId, voiceId }: { characterId: string; voiceId: string }) => {
+    mutationFn: async ({
+      characterId,
+      characterName,
+      voiceId,
+    }: {
+      characterId: string;
+      characterName: string;
+      voiceId: string;
+    }) => {
+      const staleScenes = (scenesQ.data ?? []).filter((scene) =>
+        scene.dialogues.some((dialogue) => dialogue.character === characterName),
+      );
+      for (const scene of staleScenes) {
+        const dialogues = scene.dialogues.map((dialogue) =>
+          dialogue.character === characterName ? { ...dialogue, audio_path: null } : dialogue,
+        );
+        const { error: sceneError } = await supabase
+          .from("scenes")
+          .update({ dialogues })
+          .eq("id", scene.id);
+        if (sceneError)
+          throw new Error(
+            "Could not invalidate audio for the changed voice: " + sceneError.message,
+          );
+      }
       const { error } = await supabase
         .from("video_characters")
         .update({ voice_id: voiceId })
         .eq("video_id", id)
         .eq("character_id", characterId);
       if (error) throw error;
+      const { error: videoError } = await supabase
+        .from("videos")
+        .update({ status: "scenes", final_video_path: null, updated_at: new Date().toISOString() })
+        .eq("id", id);
+      if (videoError)
+        throw new Error(
+          "Voice was updated, but the video status could not be updated: " + videoError.message,
+        );
     },
     onSuccess: () => {
-      toast.success("Voice updated");
+      setVideoUrl(null);
+      toast.success("Voice updated. Regenerate affected dialogue voiceovers before exporting.");
       invalidate();
     },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Could not update the voice"),
   });
 
   const video = videoQ.data;
@@ -262,8 +400,12 @@ function Studio() {
               <div>
                 <h1 className="font-display text-3xl font-bold tracking-tight">{video.title}</h1>
                 <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                  <Badge variant="secondary" className="capitalize">{video.status}</Badge>
-                  <span>{ANIMATION_STYLES.find((s) => s.id === video.style)?.label ?? video.style}</span>
+                  <Badge variant="secondary" className="capitalize">
+                    {video.status}
+                  </Badge>
+                  <span>
+                    {ANIMATION_STYLES.find((s) => s.id === video.style)?.label ?? video.style}
+                  </span>
                   <span>· {video.language}</span>
                   <span>· {video.resolution}</span>
                   <span>· {video.bgm_enabled ? "music on" : "no music"}</span>
@@ -273,7 +415,11 @@ function Studio() {
                 <AlertDialog>
                   <AlertDialogTrigger asChild>
                     <Button variant="outline" size="sm" disabled={regenStoryboard.isPending}>
-                      {regenStoryboard.isPending ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+                      {regenStoryboard.isPending ? (
+                        <Loader2 className="size-4 animate-spin" />
+                      ) : (
+                        <RefreshCw className="size-4" />
+                      )}
                       Rewrite storyboard
                     </Button>
                   </AlertDialogTrigger>
@@ -281,23 +427,40 @@ function Studio() {
                     <AlertDialogHeader>
                       <AlertDialogTitle>Rewrite the storyboard?</AlertDialogTitle>
                       <AlertDialogDescription>
-                        The AI regenerates every scene, narration and dialogue. Current scene text is replaced; generated
-                        art and audio for old scenes is detached.
+                        The AI regenerates every scene, narration and dialogue. Current scene text
+                        is replaced; generated art and audio for old scenes is detached.
                       </AlertDialogDescription>
                     </AlertDialogHeader>
                     <AlertDialogFooter>
                       <AlertDialogCancel>Cancel</AlertDialogCancel>
-                      <AlertDialogAction onClick={() => regenStoryboard.mutate()}>Rewrite</AlertDialogAction>
+                      <AlertDialogAction onClick={() => regenStoryboard.mutate()}>
+                        Rewrite
+                      </AlertDialogAction>
                     </AlertDialogFooter>
                   </AlertDialogContent>
                 </AlertDialog>
-                <Button variant="outline" size="sm" disabled={busyStep !== null} onClick={generateAllArt}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={busyStep !== null}
+                  onClick={generateAllArt}
+                >
                   <ImageIcon className="size-4" /> Generate all art
                 </Button>
-                <Button variant="outline" size="sm" disabled={busyStep !== null} onClick={generateAllVoice}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={busyStep !== null}
+                  onClick={generateAllVoice}
+                >
                   <Mic className="size-4" /> Generate all voices
                 </Button>
-                <Button size="sm" className="glow-gold" disabled={progress !== null || scenes.length === 0} onClick={composeAndExport}>
+                <Button
+                  size="sm"
+                  className="glow-gold"
+                  disabled={progress !== null || scenes.length === 0}
+                  onClick={composeAndExport}
+                >
                   <Play className="size-4" /> Compose & export
                 </Button>
               </div>
@@ -308,7 +471,9 @@ function Studio() {
                 <CardContent className="pt-5">
                   <div className="mb-2 flex justify-between text-sm">
                     <span>{progress.label}…</span>
-                    <span className="text-muted-foreground">{Math.round(progress.ratio * 100)}%</span>
+                    <span className="text-muted-foreground">
+                      {Math.round(progress.ratio * 100)}%
+                    </span>
                   </div>
                   <Progress value={progress.ratio * 100} />
                   <p className="mt-2 text-xs text-muted-foreground">
@@ -341,7 +506,10 @@ function Studio() {
                       <div className="flex gap-3">
                         <div className="size-16 shrink-0 overflow-hidden rounded-lg bg-secondary">
                           {c.characters.image_path ? (
-                            <CharacterImage path={c.characters.image_path} fetchUrl={imageUrl.mutateAsync} />
+                            <CharacterImage
+                              path={c.characters.image_path}
+                              fetchUrl={imageUrl.mutateAsync}
+                            />
                           ) : (
                             <div className="flex h-full items-center justify-center text-muted-foreground">
                               <Wand2 className="size-5" />
@@ -350,11 +518,22 @@ function Studio() {
                         </div>
                         <div className="min-w-0">
                           <div className="font-semibold">{c.characters.name}</div>
-                          <p className="line-clamp-2 text-xs text-muted-foreground">{c.characters.description}</p>
+                          <p className="line-clamp-2 text-xs text-muted-foreground">
+                            {c.characters.description}
+                          </p>
                         </div>
                       </div>
                       <div className="mt-3 flex items-center gap-2">
-                        <Select value={c.voice_id} onValueChange={(v) => setVoice.mutate({ characterId: c.character_id, voiceId: v })}>
+                        <Select
+                          value={c.voice_id}
+                          onValueChange={(v) =>
+                            setVoice.mutate({
+                              characterId: c.character_id,
+                              characterName: c.characters?.name ?? "",
+                              voiceId: v,
+                            })
+                          }
+                        >
                           <SelectTrigger className="h-8 text-xs">
                             <SelectValue />
                           </SelectTrigger>
@@ -370,9 +549,19 @@ function Studio() {
                           variant="outline"
                           size="sm"
                           disabled={busyStep !== null}
-                          onClick={() => runStep(`char-${c.character_id}`, () => characterArtFn({ data: { characterId: c.character_id, style: video.style } }))}
+                          onClick={() =>
+                            runStep(`char-${c.character_id}`, () =>
+                              characterArtFn({
+                                data: { characterId: c.character_id, style: video.style },
+                              }),
+                            )
+                          }
                         >
-                          {busyStep === `char-${c.character_id}` ? <Loader2 className="size-3 animate-spin" /> : <Wand2 className="size-3" />}
+                          {busyStep === `char-${c.character_id}` ? (
+                            <Loader2 className="size-3 animate-spin" />
+                          ) : (
+                            <Wand2 className="size-3" />
+                          )}
                           {c.characters.image_path ? "Redo art" : "Generate art"}
                         </Button>
                       </div>
@@ -390,8 +579,12 @@ function Studio() {
                   key={s.id}
                   scene={s}
                   busyStep={busyStep}
-                  onArt={() => runStep(`scene-${s.id}`, () => sceneArtFn({ data: { sceneId: s.id } }))}
-                  onVoice={() => runStep(`voice-${s.id}`, () => voiceoverFn({ data: { sceneId: s.id } }))}
+                  onArt={() =>
+                    runStep(`scene-${s.id}`, () => sceneArtFn({ data: { sceneId: s.id } }))
+                  }
+                  onVoice={() =>
+                    runStep(`voice-${s.id}`, () => voiceoverFn({ data: { sceneId: s.id } }))
+                  }
                   onSaveNarration={(narration) => saveScene.mutate({ sceneId: s.id, narration })}
                   fetchUrl={imageUrl.mutateAsync}
                 />
@@ -404,12 +597,22 @@ function Studio() {
   );
 }
 
-function CharacterImage({ path, fetchUrl }: { path: string; fetchUrl: (args: { bucket: string; path: string }) => Promise<string | null> }) {
+function CharacterImage({
+  path,
+  fetchUrl,
+}: {
+  path: string;
+  fetchUrl: (args: { bucket: string; path: string }) => Promise<string | null>;
+}) {
   const [url, setUrl] = useState<string | null>(null);
   if (url === null) {
     void fetchUrl({ bucket: "character-images", path }).then((u) => setUrl(u ?? ""));
   }
-  return url ? <img src={url} alt="" className="h-full w-full object-cover" /> : <div className="h-full w-full animate-pulse bg-secondary" />;
+  return url ? (
+    <img src={url} alt="" className="h-full w-full object-cover" />
+  ) : (
+    <div className="h-full w-full animate-pulse bg-secondary" />
+  );
 }
 
 function SceneCard({
@@ -432,7 +635,9 @@ function SceneCard({
   const [editing, setEditing] = useState(false);
 
   if (scene.image_path && url === undefined) {
-    void fetchUrl({ bucket: "scene-assets", path: scene.image_path }).then((u) => setUrl(u ?? null));
+    void fetchUrl({ bucket: "scene-assets", path: scene.image_path }).then((u) =>
+      setUrl(u ?? null),
+    );
   }
 
   return (
@@ -445,23 +650,37 @@ function SceneCard({
             ) : scene.image_path ? (
               <div className="h-full w-full animate-pulse bg-secondary" />
             ) : (
-              <div className="flex h-full items-center justify-center text-xs text-muted-foreground">No art yet</div>
+              <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+                No art yet
+              </div>
             )}
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex items-start justify-between gap-2">
               <div>
-                <div className="text-xs font-semibold uppercase tracking-wide text-primary">Scene {scene.scene_index + 1}</div>
+                <div className="text-xs font-semibold uppercase tracking-wide text-primary">
+                  Scene {scene.scene_index + 1}
+                </div>
                 <h3 className="font-semibold">{scene.heading}</h3>
               </div>
               <div className="flex shrink-0 gap-2">
                 <Button variant="outline" size="sm" disabled={busyStep !== null} onClick={onArt}>
-                  {busyStep === `scene-${scene.id}` ? <Loader2 className="size-3 animate-spin" /> : <ImageIcon className="size-3" />}
+                  {busyStep === `scene-${scene.id}` ? (
+                    <Loader2 className="size-3 animate-spin" />
+                  ) : (
+                    <ImageIcon className="size-3" />
+                  )}
                   {scene.image_path ? "Redo art" : "Art"}
                 </Button>
                 <Button variant="outline" size="sm" disabled={busyStep !== null} onClick={onVoice}>
-                  {busyStep === `voice-${scene.id}` ? <Loader2 className="size-3 animate-spin" /> : <Mic className="size-3" />}
-                  {scene.audio_path || scene.dialogues.some((d) => d.audio_path) ? "Redo voice" : "Voice"}
+                  {busyStep === `voice-${scene.id}` ? (
+                    <Loader2 className="size-3 animate-spin" />
+                  ) : (
+                    <Mic className="size-3" />
+                  )}
+                  {scene.audio_path || scene.dialogues.some((d) => d.audio_path)
+                    ? "Redo voice"
+                    : "Voice"}
                 </Button>
               </div>
             </div>
@@ -470,12 +689,29 @@ function SceneCard({
             <div className="mt-3">
               {editing ? (
                 <div className="space-y-2">
-                  <Textarea rows={3} value={narration} onChange={(e) => setNarration(e.target.value)} />
+                  <Textarea
+                    rows={3}
+                    value={narration}
+                    onChange={(e) => setNarration(e.target.value)}
+                  />
                   <div className="flex gap-2">
-                    <Button size="sm" onClick={() => { onSaveNarration(narration); setEditing(false); }}>
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        onSaveNarration(narration);
+                        setEditing(false);
+                      }}
+                    >
                       <Save className="size-3" /> Save
                     </Button>
-                    <Button size="sm" variant="ghost" onClick={() => { setNarration(scene.narration); setEditing(false); }}>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => {
+                        setNarration(scene.narration);
+                        setEditing(false);
+                      }}
+                    >
                       Cancel
                     </Button>
                   </div>
@@ -483,9 +719,18 @@ function SceneCard({
               ) : (
                 <div className="flex items-start gap-2">
                   <p className="min-w-0 flex-1 rounded-md bg-secondary/60 px-3 py-2 text-sm italic">
-                    {scene.narration ? `“${scene.narration}”` : <span className="not-italic text-muted-foreground">No narration</span>}
+                    {scene.narration ? (
+                      `“${scene.narration}”`
+                    ) : (
+                      <span className="not-italic text-muted-foreground">No narration</span>
+                    )}
                   </p>
-                  <Button variant="ghost" size="sm" onClick={() => setEditing(true)} aria-label="Edit narration">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setEditing(true)}
+                    aria-label="Edit narration"
+                  >
                     <Save className="size-3" /> Edit
                   </Button>
                 </div>
@@ -498,7 +743,10 @@ function SceneCard({
                   <li key={i} className="flex items-start gap-2 text-sm">
                     <Label className="mt-0.5 shrink-0 text-xs text-accent">{d.character}</Label>
                     <span className="min-w-0 flex-1">
-                      {d.line} {d.emotion && <span className="text-xs text-muted-foreground">({d.emotion})</span>}
+                      {d.line}{" "}
+                      {d.emotion && (
+                        <span className="text-xs text-muted-foreground">({d.emotion})</span>
+                      )}
                       {d.audio_path && <span className="ml-1 text-xs text-primary">♪</span>}
                     </span>
                   </li>

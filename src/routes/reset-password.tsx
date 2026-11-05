@@ -87,7 +87,10 @@ function ResetPasswordPage() {
                 </Button>
               </form>
             ) : (
-              <Button className="w-full" onClick={() => navigate({ to: "/auth" })}>
+              <Button
+                className="w-full"
+                onClick={() => navigate({ to: "/auth", search: { mode: "signin" } })}
+              >
                 Back to sign in
               </Button>
             )}

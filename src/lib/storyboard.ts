@@ -3,9 +3,18 @@
 export type VideoMode = "story" | "script" | "prompt";
 
 export const MODE_META: Record<VideoMode, { label: string; blurb: string }> = {
-  story: { label: "Story to Video", blurb: "Paste a story or a rough idea — AI expands it into a full screenplay." },
-  script: { label: "Script to Video", blurb: "Upload or paste a script. Scenes, characters and dialogue are detected automatically." },
-  prompt: { label: "Prompt to Video", blurb: "One line about what you want — AI writes the story and the storyboard." },
+  story: {
+    label: "Story to Video",
+    blurb: "Paste a story or a rough idea — AI expands it into a full screenplay.",
+  },
+  script: {
+    label: "Script to Video",
+    blurb: "Upload or paste a script. Scenes, characters and dialogue are detected automatically.",
+  },
+  prompt: {
+    label: "Prompt to Video",
+    blurb: "One line about what you want — AI writes the story and the storyboard.",
+  },
 };
 
 export interface StylePreset {
@@ -15,27 +24,74 @@ export interface StylePreset {
 }
 
 export const ANIMATION_STYLES: StylePreset[] = [
-  { id: "storybook", label: "Storybook", prompt: "warm hand-painted storybook illustration, soft brush textures, gentle golden lighting, rich colors" },
-  { id: "anime", label: "Anime", prompt: "vibrant 2D anime style, clean line art, expressive eyes, cinematic color grading" },
-  { id: "cartoon", label: "Cartoon", prompt: "playful 2D cartoon style, bold outlines, bright saturated colors, exaggerated shapes" },
-  { id: "render3d", label: "3D Render", prompt: "polished stylized 3D render, soft global illumination, appealing rounded character designs, detailed materials" },
-  { id: "watercolor", label: "Watercolor", prompt: "dreamy watercolor painting, flowing pigment, visible paper texture, luminous washes" },
-  { id: "comic", label: "Comic Book", prompt: "dynamic comic book art, ink outlines, halftone shading, dramatic contrast" },
+  {
+    id: "storybook",
+    label: "Storybook",
+    prompt:
+      "warm hand-painted storybook illustration, soft brush textures, gentle golden lighting, rich colors",
+  },
+  {
+    id: "anime",
+    label: "Anime",
+    prompt: "vibrant 2D anime style, clean line art, expressive eyes, cinematic color grading",
+  },
+  {
+    id: "cartoon",
+    label: "Cartoon",
+    prompt: "playful 2D cartoon style, bold outlines, bright saturated colors, exaggerated shapes",
+  },
+  {
+    id: "render3d",
+    label: "3D Render",
+    prompt:
+      "polished stylized 3D render, soft global illumination, appealing rounded character designs, detailed materials",
+  },
+  {
+    id: "watercolor",
+    label: "Watercolor",
+    prompt: "dreamy watercolor painting, flowing pigment, visible paper texture, luminous washes",
+  },
+  {
+    id: "comic",
+    label: "Comic Book",
+    prompt: "dynamic comic book art, ink outlines, halftone shading, dramatic contrast",
+  },
 ];
 
 export function stylePrompt(styleId: string): string {
-  return (ANIMATION_STYLES.find((s) => s.id === styleId) ?? ANIMATION_STYLES[0]).prompt;
+  const style = ANIMATION_STYLES.find((s) => s.id === styleId) ?? ANIMATION_STYLES[0];
+  if (!style) throw new Error("No animation styles are configured");
+  return style.prompt;
 }
 
 export const LANGUAGES = [
-  "English", "Hindi", "Spanish", "French", "German", "Portuguese",
-  "Japanese", "Mandarin", "Arabic", "Bengali", "Tamil", "Telugu",
+  "English",
+  "Hindi",
+  "Spanish",
+  "French",
+  "German",
+  "Portuguese",
+  "Japanese",
+  "Mandarin",
+  "Arabic",
+  "Bengali",
+  "Tamil",
+  "Telugu",
 ];
 
 export const LANGUAGE_CODES: Record<string, string> = {
-  English: "en-US", Hindi: "hi-IN", Spanish: "es-ES", French: "fr-FR",
-  German: "de-DE", Portuguese: "pt-BR", Japanese: "ja-JP", Mandarin: "cmn-CN",
-  Arabic: "ar-XA", Bengali: "bn-IN", Tamil: "ta-IN", Telugu: "te-IN",
+  English: "en-US",
+  Hindi: "hi-IN",
+  Spanish: "es-ES",
+  French: "fr-FR",
+  German: "de-DE",
+  Portuguese: "pt-BR",
+  Japanese: "ja-JP",
+  Mandarin: "cmn-CN",
+  Arabic: "ar-XA",
+  Bengali: "bn-IN",
+  Tamil: "ta-IN",
+  Telugu: "te-IN",
 };
 
 export interface VoiceOption {
@@ -94,14 +150,29 @@ export function sceneCountFor(targetSec: number): number {
   return Math.min(12, Math.max(3, Math.round(targetSec / 8)));
 }
 
-const moodEnum = { type: "string", enum: ["warm", "epic", "playful", "calm", "mysterious"] } as const;
+export function assertStoryboardSceneCount(actual: number, expected: number): void {
+  if (actual !== expected) {
+    throw new Error(
+      `The storyboard returned ${actual} scenes; ${expected} are required for this duration. Please try again.`,
+    );
+  }
+}
+
+const moodEnum = {
+  type: "string",
+  enum: ["warm", "epic", "playful", "calm", "mysterious"],
+} as const;
 
 const characterSchema = {
   type: "object",
   properties: {
     name: { type: "string" },
     description: { type: "string", description: "Who they are, personality, role in the story" },
-    appearance: { type: "string", description: "Detailed visual description: age, hair, clothing, colors, distinguishing features" },
+    appearance: {
+      type: "string",
+      description:
+        "Detailed visual description: age, hair, clothing, colors, distinguishing features",
+    },
   },
   required: ["name", "description", "appearance"],
   additionalProperties: false,
@@ -123,8 +194,15 @@ const sceneSchema = {
   properties: {
     heading: { type: "string", description: "Short scene title, e.g. 'EXT. MAGICAL FOREST - DAY'" },
     description: { type: "string", description: "What happens in the scene" },
-    imagePrompt: { type: "string", description: "Detailed visual prompt for one 16:9 frame: setting, composition, lighting, characters present, action" },
-    narration: { type: "string", description: "Voiceover narration for this scene, 1-3 sentences. Empty string if none." },
+    imagePrompt: {
+      type: "string",
+      description:
+        "Detailed visual prompt for one 16:9 frame: setting, composition, lighting, characters present, action",
+    },
+    narration: {
+      type: "string",
+      description: "Voiceover narration for this scene, 1-3 sentences. Empty string if none.",
+    },
     dialogues: { type: "array", items: dialogueSchema },
     emotion: moodEnum,
   },
@@ -162,7 +240,12 @@ export function buildStoryboardUserPrompt(input: {
   language: string;
   sceneCount: number;
 }): string {
-  const modeWord = input.mode === "script" ? "The user provided a complete script — respect its structure, extract scene headings, character names, dialogue lines and actions." : input.mode === "story" ? "The user provided a story or rough idea — expand it into a complete screenplay." : "The user provided only a prompt — invent a compelling story around it.";
+  const modeWord =
+    input.mode === "script"
+      ? "The user provided a complete script — respect its structure, extract scene headings, character names, dialogue lines and actions."
+      : input.mode === "story"
+        ? "The user provided a story or rough idea — expand it into a complete screenplay."
+        : "The user provided only a prompt — invent a compelling story around it.";
   return `MODE: ${modeWord}
 
 CONTENT:

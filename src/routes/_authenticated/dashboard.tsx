@@ -44,7 +44,10 @@ interface VideoRow {
   final_video_path: string | null;
 }
 
-const STATUS_LABEL: Record<string, { label: string; variant: "secondary" | "default" | "outline" | "destructive" }> = {
+const STATUS_LABEL: Record<
+  string,
+  { label: string; variant: "secondary" | "default" | "outline" | "destructive" }
+> = {
   draft: { label: "Draft", variant: "outline" },
   storyboard: { label: "Storyboard ready", variant: "secondary" },
   scenes: { label: "Generating scenes", variant: "secondary" },
@@ -85,7 +88,9 @@ function Dashboard() {
         <div className="mb-8 flex items-center justify-between">
           <div>
             <h1 className="font-display text-3xl font-bold tracking-tight">Your videos</h1>
-            <p className="mt-1 text-sm text-muted-foreground">Pick up a project or start something new.</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Pick up a project or start something new.
+            </p>
           </div>
           <Button className="glow-gold" asChild>
             <Link to="/create">New video</Link>
@@ -104,7 +109,8 @@ function Dashboard() {
               </span>
               <h2 className="font-display text-xl font-bold">No videos yet</h2>
               <p className="max-w-sm text-sm text-muted-foreground">
-                Start with a story, script or a single sentence — StoryReel turns it into an animated video.
+                Start with a story, script or a single sentence — StoryReel turns it into an
+                animated video.
               </p>
               <Button className="mt-2" asChild>
                 <Link to="/create">Create your first video</Link>
@@ -114,9 +120,15 @@ function Dashboard() {
         ) : (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {data.map((v) => {
-              const status = STATUS_LABEL[v.status] ?? STATUS_LABEL.draft;
+              const status = STATUS_LABEL[v.status] ?? {
+                label: "Unknown status",
+                variant: "outline" as const,
+              };
               return (
-                <Card key={v.id} className="group relative overflow-hidden border-border/70 transition-colors hover:border-primary/50">
+                <Card
+                  key={v.id}
+                  className="group relative overflow-hidden border-border/70 transition-colors hover:border-primary/50"
+                >
                   <Link to="/video/$id" params={{ id: v.id }} className="block">
                     <div className="hero-radial film-grain relative flex h-32 items-center justify-center bg-secondary/40">
                       <span className="flex size-12 items-center justify-center rounded-xl bg-primary/20 text-primary">

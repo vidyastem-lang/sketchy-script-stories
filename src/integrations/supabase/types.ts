@@ -216,7 +216,10 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      consume_guest_provision_slot: {
+        Args: { p_ip_hash: string }
+        Returns: boolean
+      }
     }
     Enums: {
       [_ in never]: never

@@ -20,7 +20,13 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 
@@ -28,9 +34,15 @@ export const Route = createFileRoute("/_authenticated/create")({
   head: () => ({
     meta: [
       { title: "New video — StoryReel" },
-      { name: "description", content: "Create a new animated video from a story, script or prompt." },
+      {
+        name: "description",
+        content: "Create a new animated video from a story, script or prompt.",
+      },
       { property: "og:title", content: "New video — StoryReel" },
-      { property: "og:description", content: "Create a new animated video from a story, script or prompt." },
+      {
+        property: "og:description",
+        content: "Create a new animated video from a story, script or prompt.",
+      },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
     ],
@@ -79,8 +91,10 @@ function CreatePage() {
       let user = sessionData.session?.user ?? null;
       if (!user) {
         const guestTokens = await guestSessionFn();
-        const { data: guestData, error: sessionError } = await supabase.auth.setSession(guestTokens);
-        if (sessionError) throw new Error(`Could not start the guest session: ${sessionError.message}`);
+        const { data: guestData, error: sessionError } =
+          await supabase.auth.setSession(guestTokens);
+        if (sessionError)
+          throw new Error(`Could not start the guest session: ${sessionError.message}`);
         user = guestData.user;
       }
       if (!user) throw new Error("Supabase did not return a guest user. Please try again.");
@@ -88,7 +102,7 @@ function CreatePage() {
         .from("videos")
         .insert({
           user_id: user.id,
-          title: content.trim().split("\n")[0].slice(0, 60) || "Untitled video",
+          title: content.trim().split("\n")[0]?.slice(0, 60) || "Untitled video",
           mode,
           source_text: content.trim(),
           style,
@@ -126,7 +140,9 @@ function CreatePage() {
               key={m}
               onClick={() => setMode(m)}
               className={`rounded-xl border p-4 text-left transition-colors ${
-                mode === m ? "border-primary bg-primary/10" : "border-border bg-card hover:border-primary/40"
+                mode === m
+                  ? "border-primary bg-primary/10"
+                  : "border-border bg-card hover:border-primary/40"
               }`}
             >
               <div className="font-display font-bold">{MODE_META[m].label}</div>
@@ -138,7 +154,9 @@ function CreatePage() {
         {/* Content */}
         <div className="mt-8 space-y-3">
           <div className="flex items-center justify-between">
-            <Label htmlFor="content">{mode === "prompt" ? "Your prompt" : mode === "script" ? "Script" : "Your story"}</Label>
+            <Label htmlFor="content">
+              {mode === "prompt" ? "Your prompt" : mode === "script" ? "Script" : "Your story"}
+            </Label>
             {mode === "script" && (
               <>
                 <input
@@ -146,10 +164,23 @@ function CreatePage() {
                   type="file"
                   accept=".txt,.docx,.pdf"
                   className="hidden"
-                  onChange={(e) => handleFile(e.target.files?.[0])}
+                  onChange={(e) => {
+                    const file = e.currentTarget.files?.[0];
+                    e.currentTarget.value = "";
+                    void handleFile(file);
+                  }}
                 />
-                <Button variant="outline" size="sm" disabled={parsing} onClick={() => fileInput.current?.click()}>
-                  {parsing ? <Loader2 className="size-4 animate-spin" /> : <FileUp className="size-4" />}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={parsing}
+                  onClick={() => fileInput.current?.click()}
+                >
+                  {parsing ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <FileUp className="size-4" />
+                  )}
                   Upload TXT / DOCX / PDF
                 </Button>
               </>
@@ -205,14 +236,27 @@ function CreatePage() {
             </div>
             <div className="space-y-1.5">
               <Label>
-                Target duration · <span className="text-primary">{duration}s</span> (~{sceneCountFor(duration)} scenes)
+                Target duration · <span className="text-primary">{duration}s</span> (~
+                {sceneCountFor(duration)} scenes)
               </Label>
-              <Slider min={30} max={180} step={15} value={[duration]} onValueChange={([v]) => setDuration(v)} />
+              <Slider
+                min={30}
+                max={180}
+                step={15}
+                value={[duration]}
+                onValueChange={(values) => {
+                  const value = values[0];
+                  if (value !== undefined) setDuration(value);
+                }}
+              />
             </div>
             <div className="flex items-end gap-6">
               <div className="space-y-1.5">
                 <Label>Resolution</Label>
-                <Select value={resolution} onValueChange={(v) => setResolution(v as "720p" | "1080p")}>
+                <Select
+                  value={resolution}
+                  onValueChange={(v) => setResolution(v as "720p" | "1080p")}
+                >
                   <SelectTrigger className="w-28">
                     <SelectValue />
                   </SelectTrigger>
@@ -230,7 +274,12 @@ function CreatePage() {
           </CardContent>
         </Card>
 
-        <Button size="lg" className="glow-gold mt-8 w-full gap-2" disabled={busy} onClick={handleSubmit}>
+        <Button
+          size="lg"
+          className="glow-gold mt-8 w-full gap-2"
+          disabled={busy}
+          onClick={handleSubmit}
+        >
           {busy ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
           {busy ? "Writing the storyboard…" : "Generate storyboard"}
         </Button>

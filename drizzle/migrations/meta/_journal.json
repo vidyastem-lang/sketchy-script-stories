@@ -8,6 +8,13 @@
       "when": 1793347968975,
       "tag": "0000_video_generator_schema",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1793862946390,
+      "tag": "0001_feature_policy_repairs",
+      "breakpoints": true
     }
   ]
 }

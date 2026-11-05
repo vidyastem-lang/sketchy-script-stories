@@ -36,20 +36,35 @@ const FPS = 24;
 async function loadFFmpeg(onProgress?: (r: number, l: string) => void): Promise<FFmpeg> {
   const ffmpeg = new FFmpeg();
   ffmpeg.on("progress", ({ progress }) => {
-    if (Number.isFinite(progress)) onProgress?.(0.05 + 0.9 * Math.min(1, Math.max(0, progress)), "Encoding video");
+    if (Number.isFinite(progress))
+      onProgress?.(0.05 + 0.9 * Math.min(1, Math.max(0, progress)), "Encoding video");
   });
   const [coreURL, wasmURL, classWorkerURL] = await Promise.all([
     toBlobURL(`${CORE_BASE}/ffmpeg-core.js`, "text/javascript"),
     toBlobURL(`${CORE_BASE}/ffmpeg-core.wasm`, "application/wasm"),
     toBlobURL(WORKER_URL, "text/javascript"),
   ]);
-  await ffmpeg.load({ coreURL, wasmURL, classWorkerURL });
-  return ffmpeg;
+  try {
+    await ffmpeg.load({ coreURL, wasmURL, classWorkerURL });
+    return ffmpeg;
+  } catch (error) {
+    ffmpeg.terminate();
+    throw error;
+  } finally {
+    URL.revokeObjectURL(coreURL);
+    URL.revokeObjectURL(wasmURL);
+    URL.revokeObjectURL(classWorkerURL);
+  }
 }
 
-async function downloadAsset(supabase: SupabaseClient<Database>, bucket: string, path: string): Promise<Blob | null> {
+async function downloadAsset(
+  supabase: SupabaseClient<Database>,
+  bucket: string,
+  path: string,
+): Promise<Blob> {
   const { data, error } = await supabase.storage.from(bucket).download(path);
-  if (error || !data) return null;
+  if (error || !data)
+    throw new Error(`Could not download ${bucket}/${path}: ${error?.message ?? "Asset not found"}`);
   return data;
 }
 
@@ -72,7 +87,10 @@ function placeholderImage(index: number): Promise<Blob> {
 }
 
 async function measureAudio(blob: Blob): Promise<number> {
-  const ctx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+  const ctx = new (
+    window.AudioContext ||
+    (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+  )();
   try {
     const buf = await ctx.decodeAudioData(await blob.arrayBuffer());
     return buf.duration;
@@ -85,13 +103,64 @@ async function measureAudio(blob: Blob): Promise<number> {
 // Procedural background music (Web Audio) — warm pads + soft arpeggios.
 // ---------------------------------------------------------------------------
 
-const MOODS: Record<string, { root: number; chords: number[][]; step: number; padLevel: number }> = {
-  warm: { root: 261.63, chords: [[0, 4, 7], [-5, 0, 4], [-3, 2, 5], [2, 5, 9]], step: 0.5, padLevel: 0.11 },
-  epic: { root: 293.66, chords: [[0, 3, 7], [-2, 3, 7], [-4, 0, 5], [-5, 2, 7]], step: 0.4, padLevel: 0.13 },
-  playful: { root: 392.0, chords: [[0, 4, 9], [2, 5, 9], [-3, 0, 4], [-1, 2, 7]], step: 0.25, padLevel: 0.09 },
-  calm: { root: 220.0, chords: [[0, 4, 7, 11], [-5, 0, 4, 9], [-7, 0, 5], [-3, 2, 7]], step: 0.75, padLevel: 0.12 },
-  mysterious: { root: 164.81, chords: [[0, 3, 7, 10], [-2, 3, 8], [-4, 1, 5], [-5, 3, 6]], step: 0.6, padLevel: 0.13 },
-};
+const MOODS: Record<string, { root: number; chords: number[][]; step: number; padLevel: number }> =
+  {
+    warm: {
+      root: 261.63,
+      chords: [
+        [0, 4, 7],
+        [-5, 0, 4],
+        [-3, 2, 5],
+        [2, 5, 9],
+      ],
+      step: 0.5,
+      padLevel: 0.11,
+    },
+    epic: {
+      root: 293.66,
+      chords: [
+        [0, 3, 7],
+        [-2, 3, 7],
+        [-4, 0, 5],
+        [-5, 2, 7],
+      ],
+      step: 0.4,
+      padLevel: 0.13,
+    },
+    playful: {
+      root: 392.0,
+      chords: [
+        [0, 4, 9],
+        [2, 5, 9],
+        [-3, 0, 4],
+        [-1, 2, 7],
+      ],
+      step: 0.25,
+      padLevel: 0.09,
+    },
+    calm: {
+      root: 220.0,
+      chords: [
+        [0, 4, 7, 11],
+        [-5, 0, 4, 9],
+        [-7, 0, 5],
+        [-3, 2, 7],
+      ],
+      step: 0.75,
+      padLevel: 0.12,
+    },
+    mysterious: {
+      root: 164.81,
+      chords: [
+        [0, 3, 7, 10],
+        [-2, 3, 8],
+        [-4, 1, 5],
+        [-5, 3, 6],
+      ],
+      step: 0.6,
+      padLevel: 0.13,
+    },
+  };
 
 function encodeWav(buffer: AudioBuffer): Uint8Array {
   const numCh = Math.min(2, buffer.numberOfChannels);
@@ -120,7 +189,9 @@ function encodeWav(buffer: AudioBuffer): Uint8Array {
   for (let c = 0; c < numCh; c++) chans.push(buffer.getChannelData(c));
   for (let i = 0; i < len; i++) {
     for (let c = 0; c < numCh; c++) {
-      const v = Math.max(-1, Math.min(1, chans[c][i]));
+      const channel = chans[c];
+      if (!channel) throw new Error("Could not read generated background audio");
+      const v = Math.max(-1, Math.min(1, channel[i] ?? 0));
       view.setInt16(off, v < 0 ? v * 0x8000 : v * 0x7fff, true);
       off += 2;
     }
@@ -129,7 +200,9 @@ function encodeWav(buffer: AudioBuffer): Uint8Array {
 }
 
 export async function generateBgm(mood: Mood, durationSec: number): Promise<Uint8Array> {
-  const conf = MOODS[mood] ?? MOODS.warm;
+  const conf = MOODS[mood] ?? MOODS["warm"];
+  if (!conf || conf.chords.length === 0)
+    throw new Error("Background music configuration is incomplete");
   const sr = 44100;
   const ctx = new OfflineAudioContext(2, Math.ceil(sr * durationSec), sr);
   const master = ctx.createGain();
@@ -140,6 +213,7 @@ export async function generateBgm(mood: Mood, durationSec: number): Promise<Uint
   let ci = 0;
   for (let t = 0; t < durationSec - 0.5; t += chordLen, ci++) {
     const chord = conf.chords[ci % conf.chords.length];
+    if (!chord) throw new Error("Background music chord configuration is incomplete");
     chord.forEach((semi, j) => {
       const osc = ctx.createOscillator();
       osc.type = j === 0 ? "sine" : "triangle";
@@ -160,7 +234,12 @@ export async function generateBgm(mood: Mood, durationSec: number): Promise<Uint
 
   for (let t = 0.6; t < durationSec - 0.4; t += conf.step) {
     const chord = conf.chords[Math.floor(t / chordLen) % conf.chords.length];
-    const semi = chord[Math.floor(t / conf.step) % chord.length] + 12;
+    if (!chord || chord.length === 0)
+      throw new Error("Background music chord configuration is incomplete");
+    const chordNote = chord[Math.floor(t / conf.step) % chord.length];
+    if (chordNote === undefined)
+      throw new Error("Background music note configuration is incomplete");
+    const semi = chordNote + 12;
     const osc = ctx.createOscillator();
     osc.type = "sine";
     osc.frequency.value = conf.root * Math.pow(2, semi / 12);
@@ -190,6 +269,7 @@ export async function composeVideo(
   const W = opts.resolution === "1080p" ? 1920 : 1280;
   const H = opts.resolution === "1080p" ? 1080 : 720;
   const scenesSorted = [...scenes].sort((a, b) => a.sceneIndex - b.sceneIndex);
+  if (scenesSorted.length === 0) throw new Error("There are no scenes to export");
   const report = (r: number, l: string) => opts.onProgress?.(r, l);
 
   report(0.01, "Downloading scene art");
@@ -197,8 +277,10 @@ export async function composeVideo(
   const imageFiles: { name: string; bytes: Uint8Array }[] = [];
   for (let i = 0; i < scenesSorted.length; i++) {
     const s = scenesSorted[i];
-    let blob = s.imagePath ? await downloadAsset(supabase, "scene-assets", s.imagePath) : null;
-    if (!blob) blob = await placeholderImage(s.sceneIndex);
+    if (!s) throw new Error("Scene ordering is incomplete");
+    const blob = s.imagePath
+      ? await downloadAsset(supabase, "scene-assets", s.imagePath)
+      : await placeholderImage(s.sceneIndex);
     imageFiles.push({ name: `scene${i}.png`, bytes: new Uint8Array(await blob.arrayBuffer()) });
   }
 
@@ -208,20 +290,33 @@ export async function composeVideo(
   let clipCounter = 0;
   const sceneClips: number[][] = scenesSorted.map(() => []);
   for (let i = 0; i < scenesSorted.length; i++) {
-    for (const p of scenesSorted[i].clipPaths) {
+    const scene = scenesSorted[i];
+    const clipIndexes = sceneClips[i];
+    if (!scene || !clipIndexes) throw new Error("Scene audio data is incomplete");
+    for (const p of scene.clipPaths) {
       const blob = await downloadAsset(supabase, "scene-assets", p);
-      if (!blob) continue;
       const dur = await measureAudio(blob);
       const k = clipCounter++;
-      clipFiles.push({ name: `clip${k}.mp3`, bytes: new Uint8Array(await blob.arrayBuffer()), sceneIdx: i, dur });
-      sceneClips[i].push(k);
+      clipFiles.push({
+        name: `clip${k}.mp3`,
+        bytes: new Uint8Array(await blob.arrayBuffer()),
+        sceneIdx: i,
+        dur,
+      });
+      clipIndexes.push(k);
     }
   }
 
   // Scene durations & timeline
   const sceneDur: number[] = scenesSorted.map((_, i) => {
-    const total = sceneClips[i].reduce((acc, k) => acc + clipFiles[k].dur, 0);
-    return Math.min(30, Math.max(3, sceneClips[i].length > 0 ? total + 0.9 : 4.5));
+    const indexes = sceneClips[i];
+    if (!indexes) throw new Error("Scene audio timeline is incomplete");
+    const total = indexes.reduce((acc, k) => {
+      const clip = clipFiles[k];
+      if (!clip) throw new Error("Scene audio clip is missing from the timeline");
+      return acc + clip.dur;
+    }, 0);
+    return Math.min(30, Math.max(3, indexes.length > 0 ? total + 0.9 : 4.5));
   });
   const sceneStart: number[] = [];
   let cursor = 0;
@@ -236,79 +331,129 @@ export async function composeVideo(
 
   const ffmpeg = await loadFFmpeg((r, l) => report(r, l));
 
-  report(0.12, "Preparing encoder");
-  for (const f of imageFiles) await ffmpeg.writeFile(f.name, f.bytes);
-  for (const f of clipFiles) await ffmpeg.writeFile(f.name, f.bytes);
-  if (bgm) await ffmpeg.writeFile("bgm.wav", bgm);
+  try {
+    report(0.12, "Preparing encoder");
+    for (const f of imageFiles) await ffmpeg.writeFile(f.name, f.bytes);
+    for (const f of clipFiles) await ffmpeg.writeFile(f.name, f.bytes);
+    if (bgm) await ffmpeg.writeFile("bgm.wav", bgm);
 
-  // Build filter graph
-  const IW = Math.round(W * 1.35);
-  const IH = Math.round(H * 1.35);
-  const parts: string[] = [];
-  const vLabels: string[] = [];
-  scenesSorted.forEach((_, i) => {
-    const frames = Math.max(1, Math.round(sceneDur[i] * FPS));
-    const rate = (0.22 / frames).toFixed(6);
-    let motion: string;
-    switch (i % 3) {
-      case 0:
-        motion = `z='min(1+${rate}*on,1.22)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
-        break;
-      case 1:
-        motion = `z='1.18':x='(iw-iw/zoom)*min(1\\,on/${frames})':y='ih/2-(ih/zoom/2)'`;
-        break;
-      default:
-        motion = `z='max(1.22-${rate}*on,1.0)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
-    }
+    // Build filter graph
+    const IW = Math.round(W * 1.35);
+    const IH = Math.round(H * 1.35);
+    const parts: string[] = [];
+    const vLabels: string[] = [];
+    scenesSorted.forEach((_, i) => {
+      const duration = sceneDur[i];
+      if (duration === undefined) throw new Error("Scene duration is missing from the timeline");
+      const frames = Math.max(1, Math.round(duration * FPS));
+      const rate = (0.22 / frames).toFixed(6);
+      let motion: string;
+      switch (i % 3) {
+        case 0:
+          motion = `z='min(1+${rate}*on,1.22)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
+          break;
+        case 1:
+          motion = `z='1.18':x='(iw-iw/zoom)*min(1\\,on/${frames})':y='ih/2-(ih/zoom/2)'`;
+          break;
+        default:
+          motion = `z='max(1.22-${rate}*on,1.0)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
+      }
+      parts.push(
+        `[${i}:v]scale=${IW}:${IH}:force_original_aspect_ratio=increase,crop=${IW}:${IH},zoompan=${motion}:d=1:s=${W}x${H}:fps=${FPS},setsar=1[v${i}]`,
+      );
+      vLabels.push(`[v${i}]`);
+    });
     parts.push(
-      `[${i}:v]scale=${IW}:${IH}:force_original_aspect_ratio=increase,crop=${IW}:${IH},zoompan=${motion}:d=1:s=${W}x${H}:fps=${FPS},setsar=1[v${i}]`,
+      `${vLabels.join("")}concat=n=${scenesSorted.length}:v=1:a=0[vcat]`,
+      `[vcat]fade=t=in:st=0:d=0.5,fade=t=out:st=${Math.max(0, totalSec - 1.2).toFixed(2)}:d=1.2,format=yuv420p[vout]`,
     );
-    vLabels.push(`[v${i}]`);
-  });
-  parts.push(
-    `${vLabels.join("")}concat=n=${scenesSorted.length}:v=1:a=0[vcat]`,
-    `[vcat]fade=t=in:st=0:d=0.5,fade=t=out:st=${Math.max(0, totalSec - 1.2).toFixed(2)}:d=1.2,format=yuv420p[vout]`,
-  );
 
-  // Audio chain
-  const aLabels: string[] = [];
-  clipFiles.forEach((f, k) => {
-    const delayMs = Math.round((sceneStart[f.sceneIdx] + 0.35 + sceneClips[f.sceneIdx].slice(0, sceneClips[f.sceneIdx].indexOf(k)).reduce((a, kk) => a + clipFiles[kk].dur, 0)) * 1000);
-    parts.push(`[${imageFiles.length + k}:a]aresample=44100,adelay=${delayMs}:all=1,apad=whole_dur=${sceneDur[f.sceneIdx].toFixed(3)}[a${k}]`);
-    aLabels.push(`[a${k}]`);
-  });
-  let bgmIdx = -1;
-  if (bgm) {
-    bgmIdx = imageFiles.length + clipFiles.length;
-    parts.push(`[${bgmIdx}:a]volume=0.16[abgm]`);
-    aLabels.push("[abgm]");
+    // Audio chain
+    const aLabels: string[] = [];
+    clipFiles.forEach((f, k) => {
+      const start = sceneStart[f.sceneIdx];
+      const sceneClipIndexes = sceneClips[f.sceneIdx];
+      const duration = sceneDur[f.sceneIdx];
+      if (start === undefined || !sceneClipIndexes || duration === undefined) {
+        throw new Error("Voiceover clip has no matching scene timeline");
+      }
+      const clipPosition = sceneClipIndexes.indexOf(k);
+      if (clipPosition < 0) throw new Error("Voiceover clip is missing from its scene timeline");
+      const precedingDuration = sceneClipIndexes.slice(0, clipPosition).reduce((sum, clipIndex) => {
+        const precedingClip = clipFiles[clipIndex];
+        if (!precedingClip) throw new Error("A preceding voiceover clip is missing");
+        return sum + precedingClip.dur;
+      }, 0);
+      const delayMs = Math.round((start + 0.35 + precedingDuration) * 1000);
+      parts.push(
+        `[${imageFiles.length + k}:a]aresample=44100,adelay=${delayMs}:all=1,apad=whole_dur=${duration.toFixed(3)}[a${k}]`,
+      );
+      aLabels.push(`[a${k}]`);
+    });
+    let bgmIdx = -1;
+    if (bgm) {
+      bgmIdx = imageFiles.length + clipFiles.length;
+      parts.push(`[${bgmIdx}:a]volume=0.16[abgm]`);
+      aLabels.push("[abgm]");
+    }
+    if (aLabels.length === 0) {
+      // Silent audio fallback (lavfi source inside the filter graph)
+      parts.push(`anullsrc=r=44100:cl=stereo,atrim=0:${totalSec.toFixed(2)}[aout]`);
+    } else {
+      parts.push(
+        `${aLabels.join("")}amix=inputs=${aLabels.length}:duration=longest:normalize=0,atrim=0:${totalSec.toFixed(2)}[aout]`,
+      );
+    }
+
+    const args: string[] = ["-y"];
+    imageFiles.forEach((_, i) => {
+      const duration = sceneDur[i];
+      if (duration === undefined) throw new Error("Scene duration is missing from the timeline");
+      args.push(
+        "-loop",
+        "1",
+        "-framerate",
+        String(FPS),
+        "-t",
+        duration.toFixed(3),
+        "-i",
+        `scene${i}.png`,
+      );
+    });
+    clipFiles.forEach((_, k) => args.push("-i", `clip${k}.mp3`));
+    if (bgm) args.push("-i", "bgm.wav");
+    args.push("-filter_complex", parts.join(";"), "-map", "[vout]", "-map", "[aout]");
+
+    report(0.15, "Encoding video");
+    const exitCode = await ffmpeg.exec([
+      ...args,
+      "-c:v",
+      "libx264",
+      "-preset",
+      "ultrafast",
+      "-crf",
+      "24",
+      "-pix_fmt",
+      "yuv420p",
+      "-c:a",
+      "aac",
+      "-b:a",
+      "160k",
+      "-ar",
+      "44100",
+      "-movflags",
+      "+faststart",
+      "out.mp4",
+    ]);
+    if (exitCode !== 0)
+      throw new Error(`FFmpeg could not encode the video (exit code ${exitCode}).`);
+
+    report(0.97, "Finalizing");
+    const data = await ffmpeg.readFile("out.mp4");
+    const bytes = data instanceof Uint8Array ? data : new TextEncoder().encode(String(data));
+    const blob = new Blob([bytes.slice().buffer as ArrayBuffer], { type: "video/mp4" });
+    return { blob, durationSec: totalSec, width: W, height: H };
+  } finally {
+    ffmpeg.terminate();
   }
-  if (aLabels.length === 0) {
-    // Silent audio fallback (lavfi source inside the filter graph)
-    parts.push(`anullsrc=r=44100:cl=stereo,atrim=0:${totalSec.toFixed(2)}[aout]`);
-  } else {
-    parts.push(`${aLabels.join("")}amix=inputs=${aLabels.length}:duration=longest:normalize=0,atrim=0:${totalSec.toFixed(2)}[aout]`);
-  }
-
-  const args: string[] = ["-y"];
-  imageFiles.forEach((_, i) => {
-    args.push("-loop", "1", "-framerate", String(FPS), "-t", sceneDur[i].toFixed(3), "-i", `scene${i}.png`);
-  });
-  clipFiles.forEach((_, k) => args.push("-i", `clip${k}.mp3`));
-  if (bgm) args.push("-i", "bgm.wav");
-  args.push("-filter_complex", parts.join(";"), "-map", "[vout]", "-map", "[aout]");
-
-  report(0.15, "Encoding video");
-  await ffmpeg.exec([
-    ...args,
-    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24", "-pix_fmt", "yuv420p",
-    "-c:a", "aac", "-b:a", "160k", "-ar", "44100",
-    "-movflags", "+faststart", "out.mp4",
-  ]);
-
-  report(0.97, "Finalizing");
-  const data = await ffmpeg.readFile("out.mp4");
-  const bytes = data instanceof Uint8Array ? data : new TextEncoder().encode(String(data));
-  const blob = new Blob([bytes.slice().buffer as ArrayBuffer], { type: "video/mp4" });
-  return { blob, durationSec: totalSec, width: W, height: H };
 }

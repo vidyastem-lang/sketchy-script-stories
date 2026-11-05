@@ -1,4 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
+import { getRequest } from "@tanstack/react-start/server";
 import { createClient } from "@supabase/supabase-js";
 import type { Database } from "@/integrations/supabase/types";
 
@@ -39,6 +40,34 @@ export const createGuestSession = createServerFn({ method: "POST" }).handler(asy
 
   // This module reads SUPABASE_SERVICE_ROLE_KEY only on the server; never import it into client code.
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+  const request = getRequest();
+  const clientIp =
+    request?.headers.get("cf-connecting-ip")?.trim() ??
+    (process.env["NODE_ENV"] !== "production" ? "local-development" : null);
+  if (!clientIp) throw new Error("Guest session provisioning requires a trusted client IP header.");
+
+  const hmacKey = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(serviceRoleKey!),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = await crypto.subtle.sign("HMAC", hmacKey, new TextEncoder().encode(clientIp));
+  const ipHash = Array.from(new Uint8Array(signature), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+  const { data: canProvision, error: limitError } = await supabaseAdmin.rpc(
+    "consume_guest_provision_slot",
+    {
+      p_ip_hash: ipHash,
+    },
+  );
+  if (limitError)
+    throw new Error("Could not verify guest session availability: " + limitError.message);
+  if (!canProvision)
+    throw new Error("Too many new guest sessions from this network. Try again in about an hour.");
+
   const guestId = crypto.randomUUID();
   const email = `guest-${guestId}@guest.storyreel.invalid`;
   const password = `${crypto.randomUUID()}-${crypto.randomUUID().slice(0, 8)}!`;
@@ -50,17 +79,24 @@ export const createGuestSession = createServerFn({ method: "POST" }).handler(asy
     user_metadata: { guest_session: true },
   });
   if (createError || !created.user) {
-    throw new Error(`Could not provision a guest user: ${createError?.message ?? "No user returned"}`);
+    throw new Error(
+      `Could not provision a guest user: ${createError?.message ?? "No user returned"}`,
+    );
   }
 
   const authClient = createClient<Database>(supabaseUrl!, publishableKey!, {
     global: { fetch: createGuestAuthFetch(publishableKey!) },
     auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
   });
-  const { data: signedIn, error: signInError } = await authClient.auth.signInWithPassword({ email, password });
+  const { data: signedIn, error: signInError } = await authClient.auth.signInWithPassword({
+    email,
+    password,
+  });
   if (signInError || !signedIn.session) {
     await supabaseAdmin.auth.admin.deleteUser(created.user.id);
-    throw new Error(`Could not start the guest session: ${signInError?.message ?? "No session returned"}`);
+    throw new Error(
+      `Could not start the guest session: ${signInError?.message ?? "No session returned"}`,
+    );
   }
 
   return {

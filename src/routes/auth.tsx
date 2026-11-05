@@ -14,16 +14,23 @@ type Mode = "signin" | "signup" | "forgot";
 
 export const Route = createFileRoute("/auth")({
   validateSearch: (search: Record<string, unknown>) => ({
-    mode: (typeof search.mode === "string" && ["signin", "signup", "forgot"].includes(search.mode)
-      ? search.mode
+    mode: (typeof search["mode"] === "string" &&
+    ["signin", "signup", "forgot"].includes(search["mode"])
+      ? search["mode"]
       : "signin") as Mode,
   }),
   head: () => ({
     meta: [
       { title: "Sign in — StoryReel" },
-      { name: "description", content: "Sign in or create your StoryReel account to start making animated videos." },
+      {
+        name: "description",
+        content: "Sign in or create your StoryReel account to start making animated videos.",
+      },
       { property: "og:title", content: "Sign in — StoryReel" },
-      { property: "og:description", content: "Sign in or create your StoryReel account to start making animated videos." },
+      {
+        property: "og:description",
+        content: "Sign in or create your StoryReel account to start making animated videos.",
+      },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
     ],
@@ -115,7 +122,9 @@ function AuthPage() {
   async function handleSocial(provider: "google" | "lovable") {
     setBusy(true);
     try {
-      const result = await lovable.auth.signInWithOAuth(provider, { redirect_uri: window.location.origin });
+      const result = await lovable.auth.signInWithOAuth(provider, {
+        redirect_uri: window.location.origin,
+      });
       if (result.error) {
         toast.error(result.error.message ?? "Sign-in failed");
         setBusy(false);
@@ -130,7 +139,11 @@ function AuthPage() {
   }
 
   const title =
-    mode === "signup" ? "Create your account" : mode === "forgot" ? "Reset your password" : "Welcome back";
+    mode === "signup"
+      ? "Create your account"
+      : mode === "forgot"
+        ? "Reset your password"
+        : "Welcome back";
 
   return (
     <div className="hero-radial flex min-h-screen items-center justify-center px-4 py-12">
@@ -157,8 +170,8 @@ function AuthPage() {
               <div className="space-y-3 text-center">
                 <p className="font-medium">Check your email</p>
                 <p className="text-sm text-muted-foreground">
-                  We sent a confirmation link to <strong>{email}</strong>. Click it to activate your account, then sign
-                  in.
+                  We sent a confirmation link to <strong>{email}</strong>. Click it to activate your
+                  account, then sign in.
                 </p>
                 <Button
                   variant="outline"
@@ -175,10 +188,20 @@ function AuthPage() {
                 {mode !== "forgot" && (
                   <>
                     <div className="grid grid-cols-2 gap-3">
-                      <Button variant="outline" type="button" disabled={busy} onClick={() => handleSocial("google")}>
+                      <Button
+                        variant="outline"
+                        type="button"
+                        disabled={busy}
+                        onClick={() => handleSocial("google")}
+                      >
                         <GoogleIcon /> Google
                       </Button>
-                      <Button variant="outline" type="button" disabled={busy} onClick={() => handleSocial("lovable")}>
+                      <Button
+                        variant="outline"
+                        type="button"
+                        disabled={busy}
+                        onClick={() => handleSocial("lovable")}
+                      >
                         Continue with Lovable
                       </Button>
                     </div>
@@ -228,18 +251,28 @@ function AuthPage() {
                   )}
                   <Button type="submit" className="w-full glow-gold" disabled={busy}>
                     {busy && <Loader2 className="size-4 animate-spin" />}
-                    {mode === "signin" ? "Sign in" : mode === "signup" ? "Create account" : "Send reset link"}
+                    {mode === "signin"
+                      ? "Sign in"
+                      : mode === "signup"
+                        ? "Create account"
+                        : "Send reset link"}
                   </Button>
                 </form>
                 <div className="text-center text-sm text-muted-foreground">
                   {mode === "signin" && (
                     <>
                       No account?{" "}
-                      <button className="text-primary underline-offset-4 hover:underline" onClick={() => setMode("signup")}>
+                      <button
+                        className="text-primary underline-offset-4 hover:underline"
+                        onClick={() => setMode("signup")}
+                      >
                         Sign up
                       </button>{" "}
                       ·{" "}
-                      <button className="underline-offset-4 hover:underline" onClick={() => setMode("forgot")}>
+                      <button
+                        className="underline-offset-4 hover:underline"
+                        onClick={() => setMode("forgot")}
+                      >
                         Forgot password?
                       </button>
                     </>
@@ -247,13 +280,19 @@ function AuthPage() {
                   {mode === "signup" && (
                     <>
                       Already registered?{" "}
-                      <button className="text-primary underline-offset-4 hover:underline" onClick={() => setMode("signin")}>
+                      <button
+                        className="text-primary underline-offset-4 hover:underline"
+                        onClick={() => setMode("signin")}
+                      >
                         Sign in
                       </button>
                     </>
                   )}
                   {mode === "forgot" && (
-                    <button className="text-primary underline-offset-4 hover:underline" onClick={() => setMode("signin")}>
+                    <button
+                      className="text-primary underline-offset-4 hover:underline"
+                      onClick={() => setMode("signin")}
+                    >
                       Back to sign in
                     </button>
                   )}
