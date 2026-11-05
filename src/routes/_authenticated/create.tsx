@@ -73,9 +73,8 @@ function CreatePage() {
     }
     setBusy(true);
     try {
-      const { data: userData, error: userError } = await supabase.auth.getUser();
-      if (userError) throw userError;
-      let user = userData.user;
+      const { data: sessionData } = await supabase.auth.getSession();
+      let user = sessionData.session?.user ?? null;
       if (!user) {
         const { data: guestData, error: guestError } = await supabase.auth.signInAnonymously();
         if (guestError) {
