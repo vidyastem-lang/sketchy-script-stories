@@ -22,3 +22,7 @@ cd <repository-name>
 npm i
 npm run dev
 ```
+
+## Guest video creation
+
+Guests are provisioned by a server function, so Supabase Anonymous Sign-Ins do not need to be enabled. Configure `SUPABASE_SERVICE_ROLE_KEY` as a server-only secret in the deployment environment. Never name it with a `VITE_` prefix or expose it to browser code. The server also needs `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY`, and Supabase email/password sign-in must be enabled so the server can issue the guest's normal user session.

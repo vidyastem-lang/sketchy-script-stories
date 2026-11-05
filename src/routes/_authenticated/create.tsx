@@ -5,6 +5,7 @@ import { FileUp, Loader2, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { generateStoryboard } from "@/lib/ai.functions";
+import { createGuestSession } from "@/lib/guest-auth.functions";
 import { extractScriptText } from "@/lib/script-parse";
 import {
   ANIMATION_STYLES,
@@ -40,6 +41,7 @@ export const Route = createFileRoute("/_authenticated/create")({
 function CreatePage() {
   const navigate = useNavigate();
   const storyboardFn = useServerFn(generateStoryboard);
+  const guestSessionFn = useServerFn(createGuestSession);
   const [mode, setMode] = useState<VideoMode>("story");
   const [content, setContent] = useState("");
   const [style, setStyle] = useState("storybook");
@@ -76,12 +78,9 @@ function CreatePage() {
       const { data: sessionData } = await supabase.auth.getSession();
       let user = sessionData.session?.user ?? null;
       if (!user) {
-        const { data: guestData, error: guestError } = await supabase.auth.signInAnonymously();
-        if (guestError) {
-          throw new Error(
-            `Could not start a guest session: ${guestError.message}. Enable Anonymous Sign-Ins in the Supabase project settings.`,
-          );
-        }
+        const guestTokens = await guestSessionFn();
+        const { data: guestData, error: sessionError } = await supabase.auth.setSession(guestTokens);
+        if (sessionError) throw new Error(`Could not start the guest session: ${sessionError.message}`);
         user = guestData.user;
       }
       if (!user) throw new Error("Supabase did not return a guest user. Please try again.");
