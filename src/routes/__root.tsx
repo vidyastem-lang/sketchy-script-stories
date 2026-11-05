@@ -49,8 +49,10 @@ function ErrorComponent({ error, reset }: ErrorComponentProps) {
         <h1 className="text-xl font-semibold tracking-tight text-foreground">
           This page didn't load
         </h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          Something went wrong on our end. You can try refreshing or head back home.
+        <p role="alert" className="mt-2 break-words text-sm text-muted-foreground">
+          {error instanceof Error && error.message
+            ? error.message
+            : "Something went wrong. You can try refreshing or head back home."}
         </p>
         <div className="mt-6 flex flex-wrap justify-center gap-2">
           <button
@@ -80,10 +82,16 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
       { title: "StoryReel — AI Animated Video Studio" },
-      { name: "description", content: "Turn any story, script or idea into a fully voiced animated video." },
+      {
+        name: "description",
+        content: "Turn any story, script or idea into a fully voiced animated video.",
+      },
       { name: "author", content: "StoryReel" },
       { property: "og:title", content: "StoryReel — AI Animated Video Studio" },
-      { property: "og:description", content: "Turn any story, script or idea into a fully voiced animated video." },
+      {
+        property: "og:description",
+        content: "Turn any story, script or idea into a fully voiced animated video.",
+      },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
     ],

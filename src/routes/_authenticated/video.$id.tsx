@@ -3,7 +3,17 @@ import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { z } from "zod";
-import { ArrowLeft, ImageIcon, Loader2, Mic, Play, RefreshCw, Save, Wand2 } from "lucide-react";
+import {
+  ArrowLeft,
+  Download,
+  ImageIcon,
+  Loader2,
+  Mic,
+  Play,
+  RefreshCw,
+  Save,
+  Wand2,
+} from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import {
@@ -105,6 +115,15 @@ interface CastRow {
   characters: { id: string; name: string; description: string; image_path: string | null } | null;
 }
 
+async function getStorageSignedUrl(bucket: string, path: string): Promise<string | null> {
+  const { data, error } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 60 * 24);
+  if (error) {
+    console.error(`Could not create a signed URL for ${bucket}/${path}:`, error);
+    return null;
+  }
+  return data.signedUrl;
+}
+
 function Studio() {
   const { id } = Route.useParams();
   const queryClient = useQueryClient();
@@ -129,6 +148,35 @@ function Studio() {
       const { data, error } = await supabase.from("videos").select("*").eq("id", id).single();
       if (error) throw error;
       return data as VideoRow;
+    },
+  });
+
+  const finalVideoPath = videoQ.data?.final_video_path ?? null;
+  const downloadFileName = `${videoQ.data?.title.trim().replace(/[^\w-]+/g, "_") || "storyreel-video"}.mp4`;
+  const savedPlaybackUrlQ = useQuery({
+    queryKey: ["final-video-playback-url", id, finalVideoPath],
+    enabled: finalVideoPath !== null,
+    staleTime: 60 * 60 * 1000,
+    queryFn: async () => {
+      if (!finalVideoPath) throw new Error("This video has not been saved yet.");
+      const { data, error } = await supabase.storage
+        .from("final-videos")
+        .createSignedUrl(finalVideoPath, 60 * 60 * 24);
+      if (error) throw new Error("Could not load the saved video: " + error.message);
+      return data.signedUrl;
+    },
+  });
+  const savedDownloadUrlQ = useQuery({
+    queryKey: ["final-video-download-url", id, finalVideoPath, downloadFileName],
+    enabled: finalVideoPath !== null,
+    staleTime: 60 * 60 * 1000,
+    queryFn: async () => {
+      if (!finalVideoPath) throw new Error("This video has not been saved yet.");
+      const { data, error } = await supabase.storage
+        .from("final-videos")
+        .createSignedUrl(finalVideoPath, 60 * 60 * 24, { download: downloadFileName });
+      if (error) throw new Error("Could not prepare the MP4 download: " + error.message);
+      return data.signedUrl;
     },
   });
 
@@ -157,13 +205,6 @@ function Studio() {
         .eq("video_id", id);
       if (error) throw error;
       return data as unknown as CastRow[];
-    },
-  });
-
-  const imageUrl = useMutation({
-    mutationFn: async ({ bucket, path }: { bucket: string; path: string }) => {
-      const { data } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 60 * 24);
-      return data?.signedUrl ?? null;
     },
   });
 
@@ -273,6 +314,7 @@ function Studio() {
         mood: video.mood ?? "warm",
         onProgress: (ratio, label) => setProgress({ ratio, label }),
       });
+      setVideoUrl(URL.createObjectURL(result.blob));
       const { data: userData, error: userError } = await supabase.auth.getUser();
       if (userError || !userData.user)
         throw new Error("Your session expired. Refresh the page and try exporting again.");
@@ -290,7 +332,6 @@ function Studio() {
           "The MP4 was uploaded, but its library status could not be updated: " +
             updateError.message,
         );
-      setVideoUrl(URL.createObjectURL(result.blob));
       toast.success("Video rendered and saved to your library");
       invalidate();
     } catch (err) {
@@ -376,6 +417,8 @@ function Studio() {
   const video = videoQ.data;
   const scenes = scenesQ.data ?? [];
   const cast = castQ.data ?? [];
+  const playbackUrl = videoUrl ?? savedPlaybackUrlQ.data;
+  const downloadUrl = videoUrl ?? savedDownloadUrlQ.data;
 
   return (
     <div className="min-h-screen bg-background">
@@ -391,6 +434,11 @@ function Studio() {
           <div className="flex justify-center py-24">
             <Loader2 className="size-6 animate-spin text-muted-foreground" />
           </div>
+        ) : videoQ.isError ? (
+          <p role="alert" className="py-24 text-center text-destructive">
+            Could not load this video:{" "}
+            {videoQ.error instanceof Error ? videoQ.error.message : "Please try again."}
+          </p>
         ) : !video ? (
           <p className="py-24 text-center text-muted-foreground">Video not found.</p>
         ) : (
@@ -483,15 +531,37 @@ function Studio() {
               </Card>
             )}
 
-            {videoUrl && (
+            {(videoUrl || video.final_video_path) && (
               <Card className="mt-6 border-primary/50 glow-gold">
                 <CardContent className="pt-5">
-                  <video src={videoUrl} controls className="w-full rounded-lg" />
-                  <a href={videoUrl} download={`${video.title.replace(/[^\w-]+/g, "_")}.mp4`}>
-                    <Button className="mt-3">
-                      <Play className="size-4" /> Download MP4 ({video.resolution})
+                  {playbackUrl ? (
+                    <video
+                      src={playbackUrl}
+                      controls
+                      playsInline
+                      preload="metadata"
+                      className="w-full rounded-lg"
+                    />
+                  ) : savedPlaybackUrlQ.isError ? (
+                    <p role="alert" className="text-sm text-destructive">
+                      {savedPlaybackUrlQ.error.message}
+                    </p>
+                  ) : (
+                    <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
+                      <Loader2 className="size-4 animate-spin" /> Loading saved video…
+                    </div>
+                  )}
+                  {downloadUrl ? (
+                    <Button className="mt-3" asChild>
+                      <a href={downloadUrl} download={downloadFileName}>
+                        <Download className="size-4" /> Download MP4 ({video.resolution})
+                      </a>
                     </Button>
-                  </a>
+                  ) : savedDownloadUrlQ.isError ? (
+                    <p role="alert" className="mt-3 text-sm text-destructive">
+                      {savedDownloadUrlQ.error.message}
+                    </p>
+                  ) : null}
                 </CardContent>
               </Card>
             )}
@@ -506,10 +576,7 @@ function Studio() {
                       <div className="flex gap-3">
                         <div className="size-16 shrink-0 overflow-hidden rounded-lg bg-secondary">
                           {c.characters.image_path ? (
-                            <CharacterImage
-                              path={c.characters.image_path}
-                              fetchUrl={imageUrl.mutateAsync}
-                            />
+                            <CharacterImage path={c.characters.image_path} />
                           ) : (
                             <div className="flex h-full items-center justify-center text-muted-foreground">
                               <Wand2 className="size-5" />
@@ -586,7 +653,6 @@ function Studio() {
                     runStep(`voice-${s.id}`, () => voiceoverFn({ data: { sceneId: s.id } }))
                   }
                   onSaveNarration={(narration) => saveScene.mutate({ sceneId: s.id, narration })}
-                  fetchUrl={imageUrl.mutateAsync}
                 />
               ))}
             </div>
@@ -597,21 +663,28 @@ function Studio() {
   );
 }
 
-function CharacterImage({
-  path,
-  fetchUrl,
-}: {
-  path: string;
-  fetchUrl: (args: { bucket: string; path: string }) => Promise<string | null>;
-}) {
-  const [url, setUrl] = useState<string | null>(null);
-  if (url === null) {
-    void fetchUrl({ bucket: "character-images", path }).then((u) => setUrl(u ?? ""));
-  }
+function CharacterImage({ path }: { path: string }) {
+  const [url, setUrl] = useState<string | null | undefined>(undefined);
+
+  useEffect(() => {
+    let cancelled = false;
+    setUrl(undefined);
+    void getStorageSignedUrl("character-images", path).then((signedUrl) => {
+      if (!cancelled) setUrl(signedUrl);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [path]);
+
   return url ? (
     <img src={url} alt="" className="h-full w-full object-cover" />
-  ) : (
+  ) : url === undefined ? (
     <div className="h-full w-full animate-pulse bg-secondary" />
+  ) : (
+    <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+      Preview unavailable
+    </div>
   );
 }
 
@@ -621,24 +694,28 @@ function SceneCard({
   onArt,
   onVoice,
   onSaveNarration,
-  fetchUrl,
 }: {
   scene: SceneRow;
   busyStep: string | null;
   onArt: () => void;
   onVoice: () => void;
   onSaveNarration: (narration: string) => void;
-  fetchUrl: (args: { bucket: string; path: string }) => Promise<string | null>;
 }) {
   const [url, setUrl] = useState<string | null | undefined>(undefined);
   const [narration, setNarration] = useState(scene.narration);
   const [editing, setEditing] = useState(false);
 
-  if (scene.image_path && url === undefined) {
-    void fetchUrl({ bucket: "scene-assets", path: scene.image_path }).then((u) =>
-      setUrl(u ?? null),
-    );
-  }
+  useEffect(() => {
+    let cancelled = false;
+    setUrl(undefined);
+    if (!scene.image_path) return;
+    void getStorageSignedUrl("scene-assets", scene.image_path).then((signedUrl) => {
+      if (!cancelled) setUrl(signedUrl);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [scene.image_path]);
 
   return (
     <Card className="border-border/70">
@@ -647,8 +724,12 @@ function SceneCard({
           <div className="aspect-video w-full shrink-0 overflow-hidden rounded-lg bg-secondary sm:w-64">
             {scene.image_path && url ? (
               <img src={url} alt={scene.heading ?? ""} className="h-full w-full object-cover" />
-            ) : scene.image_path ? (
+            ) : scene.image_path && url === undefined ? (
               <div className="h-full w-full animate-pulse bg-secondary" />
+            ) : scene.image_path ? (
+              <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+                Preview unavailable
+              </div>
             ) : (
               <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
                 No art yet
