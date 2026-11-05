@@ -73,14 +73,23 @@ function CreatePage() {
     }
     setBusy(true);
     try {
-      const { data: userData } = await supabase.auth.getUser();
-      if (!userData.user) {
-        throw new Error("Guest access is not enabled for this project yet. Please try again later.");
+      const { data: userData, error: userError } = await supabase.auth.getUser();
+      if (userError) throw userError;
+      let user = userData.user;
+      if (!user) {
+        const { data: guestData, error: guestError } = await supabase.auth.signInAnonymously();
+        if (guestError) {
+          throw new Error(
+            `Could not start a guest session: ${guestError.message}. Enable Anonymous Sign-Ins in the Supabase project settings.`,
+          );
+        }
+        user = guestData.user;
       }
+      if (!user) throw new Error("Supabase did not return a guest user. Please try again.");
       const { data: video, error } = await supabase
         .from("videos")
         .insert({
-          user_id: userData.user.id,
+          user_id: user.id,
           title: content.trim().split("\n")[0].slice(0, 60) || "Untitled video",
           mode,
           source_text: content.trim(),

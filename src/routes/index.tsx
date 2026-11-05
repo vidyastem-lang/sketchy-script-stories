@@ -166,7 +166,7 @@ function Landing() {
           Try it with something small — a bedtime story, a product pitch, a poem.
         </p>
         <Button size="lg" className="glow-gold mt-8 gap-2" asChild>
-          <Link to="/auth" search={{ mode: "signup" }}>
+          <Link to="/create">
             Start creating <ArrowRight className="size-4" />
           </Link>
         </Button>
