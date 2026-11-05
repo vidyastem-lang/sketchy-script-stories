@@ -92,6 +92,25 @@ export const generateStoryboard = createServerFn({ method: "POST" })
     const { data: video, error } = await supabase.from("videos").select("*").eq("id", data.videoId).single();
     if (error || !video) throw new Error("Video not found");
 
+    if (context.claims.is_anonymous === true) {
+      if (data.replace || video.status !== "draft") {
+        throw new Error("Guest mode includes one video generation per session. Sign in to regenerate it.");
+      }
+      const { count, error: quotaError } = await supabase
+        .from("videos")
+        .select("id", { count: "exact", head: true })
+        .eq("user_id", userId);
+      if (quotaError) throw new Error("Could not verify guest generation allowance");
+      if (count !== 1) throw new Error("Guest mode includes one video generation per session. Sign in to create more.");
+
+      const { count: sceneCount, error: sceneCountError } = await supabase
+        .from("scenes")
+        .select("id", { count: "exact", head: true })
+        .eq("video_id", data.videoId);
+      if (sceneCountError) throw new Error("Could not verify guest generation allowance");
+      if ((sceneCount ?? 0) > 0) throw new Error("This guest video has already been generated.");
+    }
+
     if (data.replace) {
       await supabase.from("scenes").delete().eq("video_id", data.videoId);
       await supabase.from("video_characters").delete().eq("video_id", data.videoId);
@@ -175,6 +194,9 @@ export const generateCharacterArt = createServerFn({ method: "POST" })
     const { supabase, userId } = context;
     const { data: character, error } = await supabase.from("characters").select("*").eq("id", data.characterId).single();
     if (error || !character) throw new Error("Character not found");
+    if (context.claims.is_anonymous === true && character.image_path) {
+      throw new Error("Guest mode allows each image to be generated once. Sign in to regenerate it.");
+    }
 
     const prompt = `Character design sheet of "${character.name}": ${character.description}. Appearance: ${character.appearance}. Style: ${stylePrompt(data.style)}. Full body, centered composition, plain soft background, consistent clean character design, no text or labels.`;
     const bytes = await generateImageBytes(prompt, "1024x1536");
@@ -196,7 +218,10 @@ export const generateSceneArt = createServerFn({ method: "POST" })
     const { supabase, userId } = context;
     const { data: scene, error } = await supabase.from("scenes").select("*, videos!inner(id, style, user_id)").eq("id", data.sceneId).single();
     if (error || !scene) throw new Error("Scene not found");
-    const video = scene.videos as { id: string; style: string };
+    const video = scene.videos as { id: string; style: string; user_id: string };
+    if (context.claims.is_anonymous === true && scene.image_path) {
+      throw new Error("Guest mode allows each scene image to be generated once. Sign in to regenerate it.");
+    }
 
     const { data: casts } = await supabase
       .from("video_characters")
@@ -242,6 +267,10 @@ export const generateSceneVoiceover = createServerFn({ method: "POST" })
     const { data: scene, error } = await supabase.from("scenes").select("*, videos!inner(id, language, user_id)").eq("id", data.sceneId).single();
     if (error || !scene) throw new Error("Scene not found");
     const video = scene.videos as { id: string; language: string };
+    const existingDialogueAudio = (scene.dialogues as DialogueRow[] | null)?.some((dialogue) => dialogue.audio_path);
+    if (context.claims.is_anonymous === true && (scene.audio_path || existingDialogueAudio)) {
+      throw new Error("Guest mode allows each scene voiceover to be generated once. Sign in to regenerate it.");
+    }
 
     const { data: casts } = await supabase
       .from("video_characters")

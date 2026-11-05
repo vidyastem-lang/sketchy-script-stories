@@ -69,8 +69,8 @@ function Landing() {
             <Link to="/auth">Sign in</Link>
           </Button>
           <Button asChild>
-            <Link to="/auth" search={{ mode: "signup" }}>
-              Get started
+            <Link to="/create">
+              Start creating
             </Link>
           </Button>
         </div>
@@ -92,14 +92,17 @@ function Landing() {
             </p>
             <div className="mt-8 flex flex-wrap gap-3">
               <Button size="lg" className="glow-gold gap-2" asChild>
-                <Link to="/auth" search={{ mode: "signup" }}>
-                  Create your first video <ArrowRight className="size-4" />
+                <Link to="/create">
+                  Create a video — no account needed <ArrowRight className="size-4" />
                 </Link>
               </Button>
               <Button size="lg" variant="outline" asChild>
                 <Link to="/auth">I already have an account</Link>
               </Button>
             </div>
+            <p className="mt-3 text-sm text-muted-foreground">
+              Guest sessions can generate one video. Sign in to create more.
+            </p>
           </div>
           <div className="relative">
             <img
