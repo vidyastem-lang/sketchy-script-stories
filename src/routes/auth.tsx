@@ -160,7 +160,13 @@ function AuthPage() {
                   We sent a confirmation link to <strong>{email}</strong>. Click it to activate your account, then sign
                   in.
                 </p>
-                <Button variant="outline" onClick={() => setMode("signin")}>
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setAwaitingConfirm(false);
+                    setMode("signin");
+                  }}
+                >
                   Back to sign in
                 </Button>
               </div>
