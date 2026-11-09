@@ -44,6 +44,24 @@ export type Database = {
         }
         Relationships: []
       }
+      guest_provision_limits: {
+        Row: {
+          attempts: number
+          ip_hash: string
+          window_started_at: string
+        }
+        Insert: {
+          attempts?: number
+          ip_hash: string
+          window_started_at?: string
+        }
+        Update: {
+          attempts?: number
+          ip_hash?: string
+          window_started_at?: string
+        }
+        Relationships: []
+      }
       profiles: {
         Row: {
           created_at: string
