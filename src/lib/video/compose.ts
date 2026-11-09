@@ -11,6 +11,7 @@ const CORE_BASE = "https://unpkg.com/@ffmpeg/core@0.12.10/dist/esm";
 export interface ComposeSceneInput {
   sceneIndex: number;
   imagePath: string | null;
+  videoPath?: string | null;
   clipPaths: string[]; // narration first, then dialogue clips in order
 }
 
@@ -90,6 +91,27 @@ async function measureAudio(blob: Blob): Promise<number> {
     return buf.duration;
   } finally {
     void ctx.close();
+  }
+}
+
+async function measureVideo(blob: Blob): Promise<number> {
+  const url = URL.createObjectURL(blob);
+  const video = document.createElement("video");
+  video.preload = "metadata";
+  video.muted = true;
+  video.src = url;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      video.onloadedmetadata = () => resolve();
+      video.onerror = () => reject(new Error("Could not read the generated scene video duration"));
+    });
+    if (!Number.isFinite(video.duration) || video.duration <= 0)
+      throw new Error("The generated scene video has no valid duration");
+    return video.duration;
+  } finally {
+    video.removeAttribute("src");
+    video.load();
+    URL.revokeObjectURL(url);
   }
 }
 
@@ -266,19 +288,41 @@ export async function composeVideo(
   if (scenesSorted.length === 0) throw new Error("There are no scenes to export");
   const report = (r: number, l: string) => opts.onProgress?.(r, l);
 
-  report(0.01, "Downloading scene art");
-  // Gather image bytes
-  const imageFiles: { name: string; bytes: Uint8Array }[] = [];
+  report(0.01, "Downloading animated scenes");
+  const imageFiles: { name: string; bytes: Uint8Array; sceneIdx: number }[] = [];
+  const animationFiles: {
+    name: string;
+    bytes: Uint8Array;
+    sceneIdx: number;
+    dur: number;
+  }[] = [];
+  const animationDurationByScene: (number | null)[] = scenesSorted.map(() => null);
   for (let i = 0; i < scenesSorted.length; i++) {
-    const s = scenesSorted[i];
-    if (!s) throw new Error("Scene ordering is incomplete");
-    const blob = s.imagePath
-      ? await downloadAsset(supabase, "scene-assets", s.imagePath)
-      : await placeholderImage(s.sceneIndex);
-    imageFiles.push({ name: `scene${i}.png`, bytes: new Uint8Array(await blob.arrayBuffer()) });
+    const scene = scenesSorted[i];
+    if (!scene) throw new Error("Scene ordering is incomplete");
+    if (scene.videoPath) {
+      const blob = await downloadAsset(supabase, "scene-assets", scene.videoPath);
+      const dur = await measureVideo(blob);
+      animationDurationByScene[i] = dur;
+      animationFiles.push({
+        name: `motion${i}.mp4`,
+        bytes: new Uint8Array(await blob.arrayBuffer()),
+        sceneIdx: i,
+        dur,
+      });
+    } else {
+      const blob = scene.imagePath
+        ? await downloadAsset(supabase, "scene-assets", scene.imagePath)
+        : await placeholderImage(scene.sceneIndex);
+      imageFiles.push({
+        name: `scene${i}.png`,
+        bytes: new Uint8Array(await blob.arrayBuffer()),
+        sceneIdx: i,
+      });
+    }
   }
 
-  report(0.08, "Downloading voiceover");
+  report(0.06, "Preparing synchronized scene audio");
   // Gather audio clips with durations
   const clipFiles: { name: string; bytes: Uint8Array; sceneIdx: number; dur: number }[] = [];
   let clipCounter = 0;
@@ -301,7 +345,8 @@ export async function composeVideo(
     }
   }
 
-  // Scene durations & timeline
+  // Scene durations & timeline. Veo clips carry their synchronized speech audio;
+  // older still-image scenes retain the optional separately generated voice tracks.
   const sceneDur: number[] = scenesSorted.map((_, i) => {
     const indexes = sceneClips[i];
     if (!indexes) throw new Error("Scene audio timeline is incomplete");
@@ -310,7 +355,8 @@ export async function composeVideo(
       if (!clip) throw new Error("Scene audio clip is missing from the timeline");
       return acc + clip.dur;
     }, 0);
-    return Math.min(30, Math.max(3, indexes.length > 0 ? total + 0.9 : 4.5));
+    const animatedDuration = animationDurationByScene[i];
+    return Math.min(30, Math.max(3, animatedDuration ?? (indexes.length > 0 ? total + 0.9 : 4.5)));
   });
   const sceneStart: number[] = [];
   let cursor = 0;
@@ -335,10 +381,31 @@ export async function composeVideo(
   try {
     report(0.12, "Preparing encoder");
     for (const f of imageFiles) await ffmpeg.writeFile(f.name, f.bytes);
+    for (const f of animationFiles) await ffmpeg.writeFile(f.name, f.bytes);
     for (const f of clipFiles) await ffmpeg.writeFile(f.name, f.bytes);
     if (bgm) await ffmpeg.writeFile("bgm.wav", bgm);
 
-    // Build filter graph
+    // Add one FFmpeg input for every image, animated scene, voice clip, then music.
+    const args: string[] = ["-y"];
+    for (const file of imageFiles) {
+      const duration = sceneDur[file.sceneIdx];
+      if (duration === undefined) throw new Error("Scene duration is missing from the timeline");
+      args.push(
+        "-loop",
+        "1",
+        "-framerate",
+        String(FPS),
+        "-t",
+        duration.toFixed(3),
+        "-i",
+        file.name,
+      );
+    }
+    for (const file of animationFiles) args.push("-i", file.name);
+    for (const file of clipFiles) args.push("-i", file.name);
+    if (bgm) args.push("-i", "bgm.wav");
+
+    // Build normalized video and audio filter graphs using explicit input indexes.
     const IW = Math.round(W * 1.35);
     const IH = Math.round(H * 1.35);
     const parts: string[] = [];
@@ -346,6 +413,18 @@ export async function composeVideo(
     scenesSorted.forEach((_, i) => {
       const duration = sceneDur[i];
       if (duration === undefined) throw new Error("Scene duration is missing from the timeline");
+      const animationFileIndex = animationFiles.findIndex((file) => file.sceneIdx === i);
+      if (animationFileIndex >= 0) {
+        const inputIndex = imageFiles.length + animationFileIndex;
+        parts.push(
+          `[${inputIndex}:v]fps=${FPS},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,tpad=stop_mode=clone:stop_duration=${duration.toFixed(3)},trim=duration=${duration.toFixed(3)},setpts=PTS-STARTPTS[v${i}]`,
+        );
+        vLabels.push(`[v${i}]`);
+        return;
+      }
+      const imageFileIndex = imageFiles.findIndex((file) => file.sceneIdx === i);
+      if (imageFileIndex < 0)
+        throw new Error("A scene has neither an animated clip nor a fallback image");
       const frames = Math.max(1, Math.round(duration * FPS));
       const rate = (0.22 / frames).toFixed(6);
       let motion: string;
@@ -360,7 +439,7 @@ export async function composeVideo(
           motion = `z='max(1.22-${rate}*on,1.0)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
       }
       parts.push(
-        `[${i}:v]scale=${IW}:${IH}:force_original_aspect_ratio=increase,crop=${IW}:${IH},zoompan=${motion}:d=1:s=${W}x${H}:fps=${FPS},setsar=1[v${i}]`,
+        `[${imageFileIndex}:v]scale=${IW}:${IH}:force_original_aspect_ratio=increase,crop=${IW}:${IH},zoompan=${motion}:d=1:s=${W}x${H}:fps=${FPS},setsar=1[v${i}]`,
       );
       vLabels.push(`[v${i}]`);
     });
@@ -371,6 +450,17 @@ export async function composeVideo(
 
     // Audio chain
     const aLabels: string[] = [];
+    animationFiles.forEach((file, k) => {
+      const start = sceneStart[file.sceneIdx];
+      const duration = sceneDur[file.sceneIdx];
+      if (start === undefined || duration === undefined)
+        throw new Error("Animated scene audio has no matching timeline");
+      const inputIndex = imageFiles.length + k;
+      parts.push(
+        `[${inputIndex}:a:0]aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo,adelay=${Math.round(start * 1000)}:all=1,apad=whole_dur=${totalSec.toFixed(3)},atrim=0:${totalSec.toFixed(3)}[aanim${k}]`,
+      );
+      aLabels.push(`[aanim${k}]`);
+    });
     clipFiles.forEach((f, k) => {
       const start = sceneStart[f.sceneIdx];
       const sceneClipIndexes = sceneClips[f.sceneIdx];
@@ -387,13 +477,13 @@ export async function composeVideo(
       }, 0);
       const delayMs = Math.round((start + 0.35 + precedingDuration) * 1000);
       parts.push(
-        `[${imageFiles.length + k}:a]aresample=44100,adelay=${delayMs}:all=1,apad=whole_dur=${duration.toFixed(3)}[a${k}]`,
+        `[${imageFiles.length + animationFiles.length + k}:a]aresample=44100,adelay=${delayMs}:all=1,apad=whole_dur=${duration.toFixed(3)}[a${k}]`,
       );
       aLabels.push(`[a${k}]`);
     });
     let bgmIdx = -1;
     if (bgm) {
-      bgmIdx = imageFiles.length + clipFiles.length;
+      bgmIdx = imageFiles.length + animationFiles.length + clipFiles.length;
       parts.push(`[${bgmIdx}:a]volume=0.16[abgm]`);
       aLabels.push("[abgm]");
     }
@@ -406,23 +496,6 @@ export async function composeVideo(
       );
     }
 
-    const args: string[] = ["-y"];
-    imageFiles.forEach((_, i) => {
-      const duration = sceneDur[i];
-      if (duration === undefined) throw new Error("Scene duration is missing from the timeline");
-      args.push(
-        "-loop",
-        "1",
-        "-framerate",
-        String(FPS),
-        "-t",
-        duration.toFixed(3),
-        "-i",
-        `scene${i}.png`,
-      );
-    });
-    clipFiles.forEach((_, k) => args.push("-i", `clip${k}.mp3`));
-    if (bgm) args.push("-i", "bgm.wav");
     args.push("-filter_complex", parts.join(";"), "-map", "[vout]", "-map", "[aout]");
 
     report(0.15, "Encoding video");

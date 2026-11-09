@@ -67,6 +67,7 @@ export function stylePrompt(styleId: string): string {
 export const LANGUAGES = [
   "English",
   "Hindi",
+  "Hinglish (Hindi + English)",
   "Spanish",
   "French",
   "German",
@@ -82,6 +83,7 @@ export const LANGUAGES = [
 export const LANGUAGE_CODES: Record<string, string> = {
   English: "en-US",
   Hindi: "hi-IN",
+  "Hinglish (Hindi + English)": "hi-IN",
   Spanish: "es-ES",
   French: "fr-FR",
   German: "de-DE",
@@ -93,6 +95,13 @@ export const LANGUAGE_CODES: Record<string, string> = {
   Tamil: "ta-IN",
   Telugu: "te-IN",
 };
+
+export function languagePrompt(language: string): string {
+  if (language === "Hinglish (Hindi + English)") {
+    return "Hinglish: natural conversational code-switching between Hindi and English. Write Hindi phrases in Devanagari and English words/phrases in Latin script. Do not translate every line twice or make the speech purely Hindi or purely English.";
+  }
+  return language;
+}
 
 export interface VoiceOption {
   id: string;
@@ -231,7 +240,8 @@ Rules:
 - imagePrompt must describe ONE 16:9 frame: who is visible, where, what they are doing, camera framing (wide/medium/close), lighting, mood. Mention characters by name. No text, letters or watermarks in the image.
 - narration is spoken by a narrator; dialogues are spoken by characters. Keep lines short and natural so they fit the pacing.
 - Every scene needs either narration, dialogue, or both.
-- Use the requested language for title, narration, dialogues and description; keep character names recognizable.`;
+- Use the requested language for title, narration, dialogues and description; keep character names recognizable.
+- For Hinglish, naturally code-switch between Hindi and English; write Hindi phrases in Devanagari and English words/phrases in Latin script. Keep the language conversational, not a line-by-line translation.`;
 
 export function buildStoryboardUserPrompt(input: {
   mode: VideoMode;
@@ -254,7 +264,7 @@ ${input.content.slice(0, 12000)}
 """
 
 TARGET DURATION: ${input.targetDurationSec} seconds
-LANGUAGE: ${input.language}
+LANGUAGE: ${languagePrompt(input.language)}
 SCENE COUNT: exactly ${input.sceneCount} scenes
 
 Return the storyboard JSON.`;

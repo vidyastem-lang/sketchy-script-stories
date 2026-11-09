@@ -233,6 +233,11 @@ function CreatePage() {
                   ))}
                 </SelectContent>
               </Select>
+              {language === "Hinglish (Hindi + English)" && (
+                <p className="text-xs text-muted-foreground">
+                  Narration and dialogue will naturally mix Hindi and English.
+                </p>
+              )}
             </div>
             <div className="space-y-1.5">
               <Label>

@@ -21,6 +21,8 @@ import {
   generateSceneArt,
   generateSceneVoiceover,
   generateStoryboard,
+  pollSceneAnimation,
+  startSceneAnimation,
 } from "@/lib/ai.functions";
 import { ANIMATION_STYLES, VOICES, type Mood } from "@/lib/storyboard";
 import { AppNav } from "@/components/app-nav";
@@ -149,6 +151,8 @@ function Studio() {
   const characterArtFn = useServerFn(generateCharacterArt);
   const sceneArtFn = useServerFn(generateSceneArt);
   const voiceoverFn = useServerFn(generateSceneVoiceover);
+  const startAnimationFn = useServerFn(startSceneAnimation);
+  const pollAnimationFn = useServerFn(pollSceneAnimation);
 
   const [progress, setProgress] = useState<{ ratio: number; label: string } | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
@@ -296,7 +300,7 @@ function Studio() {
       toast.error(
         `Voiceover generation finished with ${failed} failed scene${failed === 1 ? "" : "s"}. Retry those scenes.`,
       );
-    else toast.success("All voiceover generated");
+    else toast.success("All TTS previews generated");
   }
 
   async function composeAndExport() {
@@ -328,29 +332,88 @@ function Studio() {
         }));
       }
 
-      const missingVoice = scenes.some(
-        (scene) =>
-          (scene.narration.trim() && !scene.audio_path) ||
-          scene.dialogues.some((dialogue) => dialogue.line.trim() && !dialogue.audio_path),
-      );
-      if (missingVoice) {
-        toast.error("Generate or regenerate voiceovers for all narrated scenes before exporting.");
-        return;
+      setVideoUrl(null);
+      const animatedPaths = new Map<string, string>();
+      const pending: {
+        sceneId: string;
+        sceneIndex: number;
+        jobId: string;
+        fingerprint: string;
+      }[] = [];
+
+      for (const [index, scene] of scenes.entries()) {
+        setProgress({
+          ratio: 0.1 + (0.08 * index) / scenes.length,
+          label: `Preparing animation ${index + 1} of ${scenes.length}`,
+        });
+        const started = await startAnimationFn({ data: { videoId: video.id, sceneId: scene.id } });
+        if (started.status === "completed") {
+          animatedPaths.set(scene.id, started.videoPath);
+        } else {
+          pending.push({
+            sceneId: scene.id,
+            sceneIndex: scene.scene_index,
+            jobId: started.jobId,
+            fingerprint: started.fingerprint,
+          });
+        }
+      }
+
+      const animationDeadline = Date.now() + 30 * 60 * 1000;
+      while (pending.length > 0) {
+        if (Date.now() >= animationDeadline) {
+          throw new Error(
+            "Scene animation is still processing. Click Animate & Export again to resume the saved jobs.",
+          );
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 8000));
+        const results = await Promise.all(
+          pending.map(async (job) => ({
+            job,
+            result: await pollAnimationFn({
+              data: {
+                videoId: video.id,
+                sceneId: job.sceneId,
+                jobId: job.jobId,
+                fingerprint: job.fingerprint,
+              },
+            }),
+          })),
+        );
+        for (const { job, result: animation } of results) {
+          if (animation.status === "completed") animatedPaths.set(job.sceneId, animation.videoPath);
+        }
+        const completedJobs = animatedPaths.size;
+        const inFlightProgress = results.reduce(
+          (sum, item) =>
+            sum +
+            (item.result.status === "completed"
+              ? 100
+              : Math.min(99, Math.max(0, item.result.progress))),
+          0,
+        );
+        const fraction = (completedJobs + inFlightProgress / 100) / scenes.length;
+        setProgress({
+          ratio: 0.1 + 0.58 * Math.min(1, fraction),
+          label: `Animating characters · ${completedJobs} of ${scenes.length} scenes ready`,
+        });
+        for (let i = pending.length - 1; i >= 0; i--) {
+          if (animatedPaths.has(pending[i]!.sceneId)) pending.splice(i, 1);
+        }
       }
 
       const { composeVideo } = await import("@/lib/video/compose");
       const inputs: ComposeSceneInput[] = scenes.map((s) => ({
         sceneIndex: s.scene_index,
         imagePath: s.image_path,
-        clipPaths: [s.audio_path, ...s.dialogues.map((d) => d.audio_path ?? null)].filter(
-          (p): p is string => Boolean(p),
-        ),
+        videoPath: animatedPaths.get(s.id) ?? null,
+        clipPaths: [],
       }));
       const result = await composeVideo(supabase, video.id, inputs, {
         resolution: video.resolution,
         bgmEnabled: video.bgm_enabled,
         mood: video.mood ?? "warm",
-        onProgress: (ratio, label) => setProgress({ ratio: 0.1 + ratio * 0.9, label }),
+        onProgress: (ratio, label) => setProgress({ ratio: 0.68 + ratio * 0.32, label }),
       });
       setVideoUrl(URL.createObjectURL(result.blob));
       const { data: userData, error: userError } = await supabase.auth.getUser();
@@ -400,7 +463,7 @@ function Studio() {
     },
     onSuccess: () => {
       setVideoUrl(null);
-      toast.success("Narration saved. Regenerate voiceover before exporting for matching audio.");
+      toast.success("Narration saved. Veo will use this text for the scene's generated speech.");
       invalidate();
     },
     onError: (e) => toast.error(e instanceof Error ? e.message : "Save failed"),
@@ -449,7 +512,7 @@ function Studio() {
     },
     onSuccess: () => {
       setVideoUrl(null);
-      toast.success("Voice updated. Regenerate affected dialogue voiceovers before exporting.");
+      toast.success("Voice preference saved. Veo-generated export voices are created separately.");
       invalidate();
     },
     onError: (e) => toast.error(e instanceof Error ? e.message : "Could not update the voice"),
@@ -542,7 +605,7 @@ function Studio() {
                   disabled={busyStep !== null}
                   onClick={generateAllVoice}
                 >
-                  <Mic className="size-4" /> Generate all voices
+                  <Mic className="size-4" /> Generate TTS previews
                 </Button>
                 <Button
                   size="sm"
@@ -550,7 +613,7 @@ function Studio() {
                   disabled={progress !== null || scenes.length === 0}
                   onClick={composeAndExport}
                 >
-                  <Play className="size-4" /> Compose & export
+                  <Play className="size-4" /> Animate & export
                 </Button>
               </div>
             </div>
@@ -801,8 +864,8 @@ function SceneCard({
                     <Mic className="size-3" />
                   )}
                   {scene.audio_path || scene.dialogues.some((d) => d.audio_path)
-                    ? "Redo voice"
-                    : "Voice"}
+                    ? "Redo preview"
+                    : "Voice preview"}
                 </Button>
               </div>
             </div>

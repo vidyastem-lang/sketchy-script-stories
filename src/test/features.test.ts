@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { extractScriptText } from "@/lib/script-parse";
-import { assertStoryboardSceneCount, sceneCountFor } from "@/lib/storyboard";
+import {
+  assertStoryboardSceneCount,
+  buildStoryboardUserPrompt,
+  LANGUAGE_CODES,
+  LANGUAGES,
+  languagePrompt,
+  sceneCountFor,
+} from "@/lib/storyboard";
 
 describe("script upload", () => {
   it("reads plain-text scripts", async () => {
@@ -24,5 +31,29 @@ describe("storyboard scene count", () => {
   it("accepts only the requested number of scenes", () => {
     expect(() => assertStoryboardSceneCount(8, 8)).not.toThrow();
     expect(() => assertStoryboardSceneCount(7, 8)).toThrow("returned 7 scenes; 8 are required");
+  });
+});
+
+describe("Hinglish language support", () => {
+  const hinglish = "Hinglish (Hindi + English)";
+
+  it("offers Hinglish and maps speech generation to the Hindi locale", () => {
+    expect(LANGUAGES).toContain(hinglish);
+    expect(LANGUAGE_CODES[hinglish]).toBe("hi-IN");
+  });
+
+  it("asks for natural Hindi-English code-switching in storyboard prompts", () => {
+    const languageInstruction = languagePrompt(hinglish);
+    const userPrompt = buildStoryboardUserPrompt({
+      mode: "story",
+      content: "A child meets a friendly robot.",
+      targetDurationSec: 30,
+      language: hinglish,
+      sceneCount: 4,
+    });
+
+    expect(languageInstruction).toContain("code-switching between Hindi and English");
+    expect(languageInstruction).toContain("Devanagari");
+    expect(userPrompt).toContain(languageInstruction);
   });
 });

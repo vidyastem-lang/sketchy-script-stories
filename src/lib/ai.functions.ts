@@ -1,13 +1,22 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
+import type { Database } from "@/integrations/supabase/types";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
-import { generateResponse, generateImage, generateSpeech } from "@lovable.dev/ai-gateway";
+import {
+  downloadVideo,
+  generateImage,
+  generateResponse,
+  generateSpeech,
+  generateVideo,
+  getVideo,
+} from "@lovable.dev/ai-gateway";
 import "@/ai-gateway.types";
 import {
   STORYBOARD_JSON_SCHEMA,
   STORYBOARD_SYSTEM_PROMPT,
   assertStoryboardSceneCount,
   buildStoryboardUserPrompt,
+  languagePrompt,
   sceneCountFor,
   stylePrompt,
   LANGUAGE_CODES,
@@ -360,6 +369,264 @@ export const generateSceneArt = createServerFn({ method: "POST" })
           videoUpdateError.message,
       );
     return { image_path: path };
+  });
+
+const veoJobSchema = z
+  .object({
+    id: z.string(),
+    status: z.enum(["queued", "in_progress", "completed", "failed"]),
+    progress: z.number().optional(),
+    error: z.object({ code: z.string().optional(), message: z.string().optional() }).optional(),
+  })
+  .passthrough();
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
+async function animationFingerprint(imageBytes: Uint8Array, prompt: string): Promise<string> {
+  const promptBytes = new TextEncoder().encode(prompt);
+  const combined = new Uint8Array(imageBytes.length + promptBytes.length);
+  combined.set(imageBytes);
+  combined.set(promptBytes, imageBytes.length);
+  const digest = await crypto.subtle.digest("SHA-256", combined);
+  return Array.from(new Uint8Array(digest))
+    .slice(0, 10)
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+async function sceneAnimationRecord(
+  supabase: import("@supabase/supabase-js").SupabaseClient<Database>,
+  videoId: string,
+  sceneId: string,
+  userId: string,
+) {
+  const { data: scene, error } = await supabase
+    .from("scenes")
+    .select("*, videos!inner(id, style, language, user_id)")
+    .eq("id", sceneId)
+    .eq("video_id", videoId)
+    .single();
+  if (error || !scene) throw new Error("Scene not found for this video");
+  const video = scene.videos as unknown as {
+    id: string;
+    style: string;
+    language: string;
+    user_id: string;
+  };
+  if (video.user_id !== userId) throw new Error("You do not have access to this scene");
+  return { scene, video };
+}
+
+async function sceneAssetExists(
+  supabase: import("@supabase/supabase-js").SupabaseClient<Database>,
+  path: string,
+): Promise<boolean> {
+  const separator = path.lastIndexOf("/");
+  const folder = path.slice(0, separator);
+  const filename = path.slice(separator + 1);
+  const { data, error } = await supabase.storage
+    .from("scene-assets")
+    .list(folder, { limit: 100, search: filename });
+  if (error) throw new Error("Could not check saved scene animation: " + error.message);
+  return (data ?? []).some((object) => object.name === filename);
+}
+
+async function saveVeoAnimation(
+  supabase: import("@supabase/supabase-js").SupabaseClient<Database>,
+  jobId: string,
+  videoPath: string,
+  manifestPath: string,
+): Promise<void> {
+  const binary = await downloadVideo(jobId);
+  const blob = await binary.blob();
+  if (!blob.size) throw new Error("The animation model returned an empty video");
+  const { error } = await supabase.storage.from("scene-assets").upload(videoPath, blob, {
+    contentType: binary.contentType || "video/mp4",
+    upsert: true,
+  });
+  if (error) throw new Error("Could not save the animated scene: " + error.message);
+  const { error: removeError } = await supabase.storage.from("scene-assets").remove([manifestPath]);
+  if (removeError) console.warn("Could not remove completed animation job manifest", removeError);
+}
+
+export const startSceneAnimation = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input) =>
+    z.object({ videoId: z.string().uuid(), sceneId: z.string().uuid() }).parse(input),
+  )
+  .handler(async ({ data, context }) => {
+    const { supabase, userId } = context;
+    const { scene, video } = await sceneAnimationRecord(
+      supabase,
+      data.videoId,
+      data.sceneId,
+      userId,
+    );
+    if (!scene.image_path) throw new Error("Generate scene art before animating this scene");
+    const { data: image, error: imageError } = await supabase.storage
+      .from("scene-assets")
+      .download(scene.image_path);
+    if (imageError || !image)
+      throw new Error("Could not load the scene image: " + imageError?.message);
+    const imageBytes = new Uint8Array(await image.arrayBuffer());
+
+    const { data: cast, error: castError } = await supabase
+      .from("video_characters")
+      .select("characters(name, description)")
+      .eq("video_id", video.id);
+    if (castError)
+      throw new Error("Could not load the character descriptions: " + castError.message);
+    const castDescriptions = (cast ?? [])
+      .map((entry) => {
+        const character = entry.characters as { name: string; description: string } | null;
+        return character ? `${character.name}: ${character.description}` : "";
+      })
+      .filter(Boolean)
+      .join("; ");
+    const dialogues = dialogueRowsSchema
+      .parse(scene.dialogues ?? [])
+      .filter((item) => item.line.trim());
+    const spokenLines = [
+      scene.narration.trim()
+        ? `Narrator (off-screen): ${JSON.stringify(scene.narration.trim())}`
+        : "",
+      ...dialogues.map((item) => `${item.character}: ${JSON.stringify(item.line.trim())}`),
+    ].filter(Boolean);
+    const spokenLanguage = languagePrompt(video.language);
+    const prompt = [
+      "Animate the supplied artwork as the exact opening frame of one continuous 8-second cinematic shot.",
+      `Visual style: ${stylePrompt(video.style)}.`,
+      `Scene: ${scene.heading ? `${scene.heading}. ` : ""}${scene.description}`,
+      `Visual direction: ${scene.image_prompt}`,
+      `Character designs to preserve: ${castDescriptions || "preserve every visible character from the reference image"}.`,
+      "Use natural, smooth body and facial movement with a steady cinematic camera. Preserve character identity, clothing, colors, composition, and setting. No cuts, captions, written text, or logos.",
+      spokenLines.length
+        ? `Generate spoken audio in ${spokenLanguage}. Perform these lines in order, with visible mouth movement synchronized to the active speaker; keep listeners' mouths still: ${spokenLines.join("; ")}`
+        : `Generate subtle natural ambience only; there is no spoken dialogue. Language context: ${spokenLanguage}.`,
+    ].join("\n");
+    const fingerprint = await animationFingerprint(imageBytes, prompt);
+    const folder = `${userId}/${video.id}`;
+    const filename = `scene-${scene.scene_index}-motion-${fingerprint}.mp4`;
+    const manifestFilename = `scene-${scene.scene_index}-motion-${fingerprint}.job.json`;
+    const videoPath = `${folder}/${filename}`;
+    const manifestPath = `${folder}/${manifestFilename}`;
+
+    if (await sceneAssetExists(supabase, videoPath)) {
+      return { status: "completed" as const, progress: 100, videoPath };
+    }
+    if (await sceneAssetExists(supabase, manifestPath)) {
+      const { data: manifestBlob, error: manifestError } = await supabase.storage
+        .from("scene-assets")
+        .download(manifestPath);
+      if (manifestError || !manifestBlob)
+        throw new Error("Could not resume the saved animation job: " + manifestError?.message);
+      const manifest = z.object({ jobId: z.string() }).parse(JSON.parse(await manifestBlob.text()));
+      return { status: "in_progress" as const, progress: 0, jobId: manifest.jobId, fingerprint };
+    }
+
+    const job = veoJobSchema.parse(
+      await generateVideo({
+        model: "google/veo-3.1-fast",
+        instances: [
+          {
+            prompt,
+            image: {
+              bytesBase64Encoded: bytesToBase64(imageBytes),
+              mimeType: image.type || "image/png",
+            },
+          },
+        ],
+        parameters: {
+          durationSeconds: 8,
+          resolution: "720p",
+          sampleCount: 1,
+          aspectRatio: "16:9",
+          generateAudio: true,
+          enhancePrompt: false,
+          negativePrompt:
+            "jitter, flicker, warped faces, extra limbs, changing character identity, subtitles, text, watermark",
+        },
+      }),
+    );
+    if (job.status === "failed")
+      throw new Error(
+        "Scene animation failed: " +
+          (job.error?.message ?? job.error?.code ?? "Veo could not generate this scene"),
+      );
+    if (job.status === "completed") {
+      await saveVeoAnimation(supabase, job.id, videoPath, manifestPath);
+      return { status: "completed" as const, progress: 100, videoPath };
+    }
+    const { error: manifestSaveError } = await supabase.storage
+      .from("scene-assets")
+      .upload(
+        manifestPath,
+        new Blob([JSON.stringify({ jobId: job.id })], { type: "application/json" }),
+        {
+          contentType: "application/json",
+          upsert: true,
+        },
+      );
+    if (manifestSaveError)
+      throw new Error(
+        "Veo started the animation, but its resumable job could not be saved: " +
+          manifestSaveError.message,
+      );
+    return { status: job.status, progress: job.progress ?? 0, jobId: job.id, fingerprint };
+  });
+
+export const pollSceneAnimation = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input) =>
+    z
+      .object({
+        videoId: z.string().uuid(),
+        sceneId: z.string().uuid(),
+        jobId: z.string().min(1),
+        fingerprint: z.string().regex(/^[a-f0-9]{20}$/),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data, context }) => {
+    const { supabase, userId } = context;
+    const { scene, video } = await sceneAnimationRecord(
+      supabase,
+      data.videoId,
+      data.sceneId,
+      userId,
+    );
+    const folder = `${userId}/${video.id}`;
+    const stem = `scene-${scene.scene_index}-motion-${data.fingerprint}`;
+    const videoPath = `${folder}/${stem}.mp4`;
+    const manifestPath = `${folder}/${stem}.job.json`;
+    const { data: manifestBlob, error: manifestError } = await supabase.storage
+      .from("scene-assets")
+      .download(manifestPath);
+    if (manifestError || !manifestBlob)
+      throw new Error("The animation job could not be resumed. Start export again to retry.");
+    const manifest = z.object({ jobId: z.string() }).parse(JSON.parse(await manifestBlob.text()));
+    if (manifest.jobId !== data.jobId) throw new Error("Animation job does not match this scene");
+
+    const job = veoJobSchema.parse(await getVideo(data.jobId));
+    if (job.status === "failed") {
+      await supabase.storage.from("scene-assets").remove([manifestPath]);
+      throw new Error(
+        "Scene animation failed: " +
+          (job.error?.message ?? job.error?.code ?? "Veo could not generate this scene"),
+      );
+    }
+    if (job.status === "completed") {
+      await saveVeoAnimation(supabase, job.id, videoPath, manifestPath);
+      return { status: "completed" as const, progress: 100, videoPath };
+    }
+    return { status: job.status, progress: job.progress ?? 0 };
   });
 
 // ---------------------------------------------------------------------------
