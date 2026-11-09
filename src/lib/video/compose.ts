@@ -2,12 +2,11 @@
 // music). Import dynamically from event handlers — never into the SSR graph.
 
 import { FFmpeg } from "@ffmpeg/ffmpeg";
-import { toBlobURL, fetchFile } from "@ffmpeg/util";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/integrations/supabase/types";
 import type { Mood } from "@/lib/storyboard";
 
-const CORE_BASE = "https://unpkg.com/@ffmpeg/core@0.12.10/dist/umd";
+const CORE_BASE = "https://unpkg.com/@ffmpeg/core@0.12.10/dist/esm";
 
 export interface ComposeSceneInput {
   sceneIndex: number;
@@ -37,21 +36,18 @@ async function loadFFmpeg(onProgress?: (r: number, l: string) => void): Promise<
     if (Number.isFinite(progress))
       onProgress?.(0.05 + 0.9 * Math.min(1, Math.max(0, progress)), "Encoding video");
   });
-  const [coreURL, wasmURL] = await Promise.all([
-    toBlobURL(`${CORE_BASE}/ffmpeg-core.js`, "text/javascript"),
-    toBlobURL(`${CORE_BASE}/ffmpeg-core.wasm`, "application/wasm"),
-  ]);
   try {
-    // Let Vite bundle FFmpeg's package ESM worker. The UMD worker cannot be
-    // loaded from a blob URL because it resolves its own modules relatively.
-    await ffmpeg.load({ coreURL, wasmURL });
+    // Use a real ESM URL: the worker must dynamically import the module core.
+    // A blob URL made from the UMD core has no ESM default export and fails here.
+    // Let Vite bundle FFmpeg's own worker module (no external blob worker URL).
+    await ffmpeg.load({
+      coreURL: `${CORE_BASE}/ffmpeg-core.js`,
+      wasmURL: `${CORE_BASE}/ffmpeg-core.wasm`,
+    });
     return ffmpeg;
   } catch (error) {
     ffmpeg.terminate();
     throw error;
-  } finally {
-    URL.revokeObjectURL(coreURL);
-    URL.revokeObjectURL(wasmURL);
   }
 }
 
