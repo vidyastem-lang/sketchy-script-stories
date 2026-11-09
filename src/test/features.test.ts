@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { extractScriptText } from "@/lib/script-parse";
 import {
   assertStoryboardSceneCount,
+  buildBasicScenes,
   buildStoryboardUserPrompt,
   LANGUAGE_CODES,
   LANGUAGES,
@@ -55,5 +56,20 @@ describe("Hinglish language support", () => {
     expect(languageInstruction).toContain("code-switching between Hindi and English");
     expect(languageInstruction).toContain("Devanagari");
     expect(userPrompt).toContain(languageInstruction);
+  });
+});
+
+describe("basic no-AI scenes", () => {
+  it("splits supplied text into the requested number of renderable text-card scenes", () => {
+    const scenes = buildBasicScenes("First event. Second event. Third event.", 3);
+
+    expect(scenes).toHaveLength(3);
+    expect(scenes.map((scene) => scene.description)).toEqual([
+      "First event.",
+      "Second event.",
+      "Third event.",
+    ]);
+    expect(scenes.every((scene) => scene.imagePrompt === "NO_AI_FALLBACK")).toBe(true);
+    expect(scenes.every((scene) => scene.dialogues.length === 0 && !scene.narration)).toBe(true);
   });
 });

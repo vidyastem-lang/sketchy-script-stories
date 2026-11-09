@@ -58,6 +58,7 @@ function CreatePage() {
   const [content, setContent] = useState("");
   const [style, setStyle] = useState("storybook");
   const [language, setLanguage] = useState("English");
+  const [useAi, setUseAi] = useState(true);
   const [duration, setDuration] = useState(60);
   const [resolution, setResolution] = useState<"720p" | "1080p">("720p");
   const [bgm, setBgm] = useState(true);
@@ -116,7 +117,7 @@ function CreatePage() {
         .single();
       if (error || !video) throw error ?? new Error("Could not create the video");
 
-      await storyboardFn({ data: { videoId: video.id } });
+      await storyboardFn({ data: { videoId: video.id, useAi } });
       await navigate({ to: "/video/$id", params: { id: video.id } });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Storyboard generation failed");
@@ -132,6 +133,28 @@ function CreatePage() {
         <p className="mt-1 text-sm text-muted-foreground">
           The AI writes the screenplay, casts characters and breaks everything into scenes.
         </p>
+
+        <div className="mt-6 space-y-2">
+          <Label>Generation mode</Label>
+          <Select
+            value={useAi ? "ai" : "basic"}
+            onValueChange={(value) => setUseAi(value === "ai")}
+          >
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ai">AI storyboard and animated scenes</SelectItem>
+              <SelectItem value="basic">Basic video · no AI or AI credits</SelectItem>
+            </SelectContent>
+          </Select>
+          {!useAi && (
+            <p className="text-xs text-muted-foreground">
+              Creates simple text-card scenes from your input and renders them in your browser. No
+              AI-generated art, speech, or character animation.
+            </p>
+          )}
+        </div>
 
         {/* Mode */}
         <div className="mt-8 grid gap-3 sm:grid-cols-3">
@@ -286,11 +309,19 @@ function CreatePage() {
           onClick={handleSubmit}
         >
           {busy ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
-          {busy ? "Writing the storyboard…" : "Generate storyboard"}
+          {busy
+            ? useAi
+              ? "Writing the storyboard…"
+              : "Preparing basic scenes…"
+            : useAi
+              ? "Generate storyboard"
+              : "Create basic video"}
         </Button>
         {busy && (
           <p className="mt-3 text-center text-sm text-muted-foreground">
-            This usually takes 20–60 seconds. You'll land in the studio when it's done.
+            {useAi
+              ? "This usually takes 20–60 seconds. You'll land in the studio when it's done."
+              : "No AI services are called. You'll land in the studio to render the basic video."}
           </p>
         )}
       </main>

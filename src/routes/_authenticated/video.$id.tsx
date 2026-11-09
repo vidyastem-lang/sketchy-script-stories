@@ -78,6 +78,7 @@ interface SceneRow {
   heading: string | null;
   description: string;
   narration: string;
+  image_prompt: string;
   dialogues: {
     character: string;
     line: string;
@@ -309,7 +310,8 @@ function Studio() {
     if (!video || scenes.length === 0) return;
     setProgress({ ratio: 0.01, label: "Preparing" });
     try {
-      const scenesWithoutArt = scenes.filter((scene) => !scene.image_path);
+      const basicMode = scenes.every((scene) => scene.image_prompt === "NO_AI_FALLBACK");
+      const scenesWithoutArt = basicMode ? [] : scenes.filter((scene) => !scene.image_path);
       if (scenesWithoutArt.length > 0) {
         setVideoUrl(null);
         const imagePaths = new Map<string, string>();
@@ -341,7 +343,7 @@ function Studio() {
         fingerprint: string;
       }[] = [];
 
-      for (const [index, scene] of scenes.entries()) {
+      for (const [index, scene] of (basicMode ? [] : scenes).entries()) {
         setProgress({
           ratio: 0.1 + (0.08 * index) / scenes.length,
           label: `Preparing animation ${index + 1} of ${scenes.length}`,
@@ -406,6 +408,8 @@ function Studio() {
       const inputs: ComposeSceneInput[] = scenes.map((s) => ({
         sceneIndex: s.scene_index,
         imagePath: s.image_path,
+        heading: s.heading ?? `Scene ${s.scene_index + 1}`,
+        description: s.description,
         videoPath: animatedPaths.get(s.id) ?? null,
         clipPaths: [],
       }));
@@ -520,6 +524,8 @@ function Studio() {
 
   const video = videoQ.data;
   const scenes = scenesQ.data ?? [];
+  const basicMode =
+    scenes.length > 0 && scenes.every((scene) => scene.image_prompt === "NO_AI_FALLBACK");
   const cast = castQ.data ?? [];
   const playbackUrl = videoUrl ?? savedPlaybackUrlQ.data;
   const downloadUrl = videoUrl ?? savedDownloadUrlQ.data;
@@ -564,56 +570,63 @@ function Studio() {
                 </div>
               </div>
               <div className="flex flex-wrap gap-2">
-                <AlertDialog>
-                  <AlertDialogTrigger asChild>
-                    <Button variant="outline" size="sm" disabled={regenStoryboard.isPending}>
-                      {regenStoryboard.isPending ? (
-                        <Loader2 className="size-4 animate-spin" />
-                      ) : (
-                        <RefreshCw className="size-4" />
-                      )}
-                      Rewrite storyboard
-                    </Button>
-                  </AlertDialogTrigger>
-                  <AlertDialogContent>
-                    <AlertDialogHeader>
-                      <AlertDialogTitle>Rewrite the storyboard?</AlertDialogTitle>
-                      <AlertDialogDescription>
-                        The AI regenerates every scene, narration and dialogue. Current scene text
-                        is replaced; generated art and audio for old scenes is detached.
-                      </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                      <AlertDialogCancel>Cancel</AlertDialogCancel>
-                      <AlertDialogAction onClick={() => regenStoryboard.mutate()}>
-                        Rewrite
-                      </AlertDialogAction>
-                    </AlertDialogFooter>
-                  </AlertDialogContent>
-                </AlertDialog>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={busyStep !== null}
-                  onClick={generateAllArt}
-                >
-                  <ImageIcon className="size-4" /> Generate all art
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={busyStep !== null}
-                  onClick={generateAllVoice}
-                >
-                  <Mic className="size-4" /> Generate TTS previews
-                </Button>
+                {!basicMode && (
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                      <Button variant="outline" size="sm" disabled={regenStoryboard.isPending}>
+                        {regenStoryboard.isPending ? (
+                          <Loader2 className="size-4 animate-spin" />
+                        ) : (
+                          <RefreshCw className="size-4" />
+                        )}
+                        Rewrite storyboard
+                      </Button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>Rewrite the storyboard?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                          The AI regenerates every scene, narration and dialogue. Current scene text
+                          is replaced; generated art and audio for old scenes is detached.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogAction onClick={() => regenStoryboard.mutate()}>
+                          Rewrite
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
+                )}
+                {!basicMode && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={busyStep !== null}
+                    onClick={generateAllArt}
+                  >
+                    <ImageIcon className="size-4" /> Generate all art
+                  </Button>
+                )}
+                {!basicMode && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={busyStep !== null}
+                    onClick={generateAllVoice}
+                  >
+                    <Mic className="size-4" /> Generate TTS previews
+                  </Button>
+                )}
                 <Button
                   size="sm"
                   className="glow-gold"
                   disabled={progress !== null || scenes.length === 0}
                   onClick={composeAndExport}
                 >
-                  <Play className="size-4" /> Animate & export
+                  <Play className="size-4" />{" "}
+                  {basicMode ? "Render basic video" : "Animate & export"}
                 </Button>
               </div>
             </div>
@@ -749,6 +762,7 @@ function Studio() {
                 <SceneCard
                   key={s.id}
                   scene={s}
+                  basicMode={basicMode}
                   busyStep={busyStep}
                   onArt={() =>
                     runStep(`scene-${s.id}`, () => sceneArtFn({ data: { sceneId: s.id } }))
@@ -794,12 +808,14 @@ function CharacterImage({ path }: { path: string }) {
 
 function SceneCard({
   scene,
+  basicMode,
   busyStep,
   onArt,
   onVoice,
   onSaveNarration,
 }: {
   scene: SceneRow;
+  basicMode: boolean;
   busyStep: string | null;
   onArt: () => void;
   onVoice: () => void;
@@ -848,26 +864,33 @@ function SceneCard({
                 </div>
                 <h3 className="font-semibold">{scene.heading}</h3>
               </div>
-              <div className="flex shrink-0 gap-2">
-                <Button variant="outline" size="sm" disabled={busyStep !== null} onClick={onArt}>
-                  {busyStep === `scene-${scene.id}` ? (
-                    <Loader2 className="size-3 animate-spin" />
-                  ) : (
-                    <ImageIcon className="size-3" />
-                  )}
-                  {scene.image_path ? "Redo art" : "Art"}
-                </Button>
-                <Button variant="outline" size="sm" disabled={busyStep !== null} onClick={onVoice}>
-                  {busyStep === `voice-${scene.id}` ? (
-                    <Loader2 className="size-3 animate-spin" />
-                  ) : (
-                    <Mic className="size-3" />
-                  )}
-                  {scene.audio_path || scene.dialogues.some((d) => d.audio_path)
-                    ? "Redo preview"
-                    : "Voice preview"}
-                </Button>
-              </div>
+              {!basicMode && (
+                <div className="flex shrink-0 gap-2">
+                  <Button variant="outline" size="sm" disabled={busyStep !== null} onClick={onArt}>
+                    {busyStep === `scene-${scene.id}` ? (
+                      <Loader2 className="size-3 animate-spin" />
+                    ) : (
+                      <ImageIcon className="size-3" />
+                    )}
+                    {scene.image_path ? "Redo art" : "Art"}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={busyStep !== null}
+                    onClick={onVoice}
+                  >
+                    {busyStep === `voice-${scene.id}` ? (
+                      <Loader2 className="size-3 animate-spin" />
+                    ) : (
+                      <Mic className="size-3" />
+                    )}
+                    {scene.audio_path || scene.dialogues.some((d) => d.audio_path)
+                      ? "Redo preview"
+                      : "Voice preview"}
+                  </Button>
+                </div>
+              )}
             </div>
             <p className="mt-1 text-sm text-muted-foreground">{scene.description}</p>
 

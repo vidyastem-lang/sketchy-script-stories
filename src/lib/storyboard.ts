@@ -159,6 +159,28 @@ export function sceneCountFor(targetSec: number): number {
   return Math.min(12, Math.max(3, Math.round(targetSec / 8)));
 }
 
+export function buildBasicScenes(content: string, count: number): StoryboardScene[] {
+  const units = content
+    .split(/(?<=[.!?।])\s+|\n+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const scenes = Array.from({ length: count }, (_, index) => {
+    const start = Math.floor((index * units.length) / count);
+    const end = Math.floor(((index + 1) * units.length) / count);
+    const text =
+      units.slice(start, end).join(" ") || content.trim() || "A quiet moment in the story.";
+    return {
+      heading: `Scene ${index + 1}`,
+      description: text,
+      imagePrompt: "NO_AI_FALLBACK",
+      narration: "",
+      dialogues: [],
+      emotion: "calm" as Mood,
+    };
+  });
+  return scenes;
+}
+
 export function assertStoryboardSceneCount(actual: number, expected: number): void {
   if (actual !== expected) {
     throw new Error(

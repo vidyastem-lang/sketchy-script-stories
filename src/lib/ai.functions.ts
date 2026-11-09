@@ -15,6 +15,7 @@ import {
   STORYBOARD_JSON_SCHEMA,
   STORYBOARD_SYSTEM_PROMPT,
   assertStoryboardSceneCount,
+  buildBasicScenes,
   buildStoryboardUserPrompt,
   languagePrompt,
   sceneCountFor,
@@ -135,7 +136,7 @@ async function generateSpeechBytes(text: string, voice: string, language: string
 
 export const generateStoryboard = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((input: { videoId: string; replace?: boolean }) => input)
+  .inputValidator((input: { videoId: string; replace?: boolean; useAi?: boolean }) => input)
   .handler(async ({ data, context }) => {
     const { supabase, userId } = context;
     const { data: video, error } = await supabase
@@ -147,31 +148,42 @@ export const generateStoryboard = createServerFn({ method: "POST" })
 
     const content = [video.source_text].filter(Boolean).join("\n\n") || video.title;
     const expectedSceneCount = sceneCountFor(video.target_duration_sec);
-    const response = await generateResponse({
-      model: RESPONSE_MODEL,
-      input: [
-        { role: "system", content: STORYBOARD_SYSTEM_PROMPT },
-        {
-          role: "user",
-          content: buildStoryboardUserPrompt({
-            mode: video.mode as "story" | "script" | "prompt",
-            content,
-            targetDurationSec: video.target_duration_sec,
-            language: video.language,
-            sceneCount: expectedSceneCount,
-          }),
-        },
-      ],
-      text: {
-        format: {
-          type: "json_schema",
-          name: "storyboard",
-          strict: true,
-          schema: STORYBOARD_JSON_SCHEMA,
-        },
-      },
-    });
-    const storyboard = parseStoryboard(extractOutputText(response), expectedSceneCount);
+    const storyboard =
+      data.useAi === false
+        ? {
+            title: video.title,
+            logline: "A basic video created locally from the supplied text.",
+            mood: "calm" as const,
+            characters: [],
+            scenes: buildBasicScenes(content, expectedSceneCount),
+          }
+        : await (async () => {
+            const response = await generateResponse({
+              model: RESPONSE_MODEL,
+              input: [
+                { role: "system", content: STORYBOARD_SYSTEM_PROMPT },
+                {
+                  role: "user",
+                  content: buildStoryboardUserPrompt({
+                    mode: video.mode as "story" | "script" | "prompt",
+                    content,
+                    targetDurationSec: video.target_duration_sec,
+                    language: video.language,
+                    sceneCount: expectedSceneCount,
+                  }),
+                },
+              ],
+              text: {
+                format: {
+                  type: "json_schema",
+                  name: "storyboard",
+                  strict: true,
+                  schema: STORYBOARD_JSON_SCHEMA,
+                },
+              },
+            });
+            return parseStoryboard(extractOutputText(response), expectedSceneCount);
+          })();
 
     if (data.replace) {
       const { error: scenesDeleteError } = await supabase

@@ -11,6 +11,8 @@ const CORE_BASE = "https://unpkg.com/@ffmpeg/core@0.12.10/dist/esm";
 export interface ComposeSceneInput {
   sceneIndex: number;
   imagePath: string | null;
+  heading?: string | null;
+  description?: string;
   videoPath?: string | null;
   clipPaths: string[]; // narration first, then dialogue clips in order
 }
@@ -63,7 +65,11 @@ async function downloadAsset(
   return data;
 }
 
-function placeholderImage(index: number): Promise<Blob> {
+function placeholderImage(
+  index: number,
+  heading?: string | null,
+  description?: string,
+): Promise<Blob> {
   const canvas = document.createElement("canvas");
   canvas.width = 1536;
   canvas.height = 1024;
@@ -74,10 +80,27 @@ function placeholderImage(index: number): Promise<Blob> {
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.fillStyle = "rgba(240, 200, 120, 0.85)";
-  ctx.font = "600 96px Manrope, sans-serif";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText(`Scene ${index + 1}`, canvas.width / 2, canvas.height / 2);
+  ctx.font = "600 70px Manrope, sans-serif";
+  ctx.fillText((heading || `Scene ${index + 1}`).slice(0, 48), canvas.width / 2, 340);
+  if (description?.trim()) {
+    ctx.fillStyle = "rgba(255, 255, 255, 0.92)";
+    ctx.font = "400 38px Manrope, sans-serif";
+    const words = description.trim().split(/\s+/);
+    const lines: string[] = [];
+    let line = "";
+    for (const word of words) {
+      const candidate = line ? `${line} ${word}` : word;
+      if (ctx.measureText(candidate).width > canvas.width * 0.78 && line) {
+        lines.push(line);
+        line = word;
+      } else line = candidate;
+      if (lines.length >= 5) break;
+    }
+    if (line && lines.length < 5) lines.push(line);
+    lines.forEach((text, lineIndex) => ctx.fillText(text, canvas.width / 2, 445 + lineIndex * 54));
+  }
   return new Promise((resolve) => canvas.toBlob((b) => resolve(b!), "image/png"));
 }
 
@@ -313,7 +336,7 @@ export async function composeVideo(
     } else {
       const blob = scene.imagePath
         ? await downloadAsset(supabase, "scene-assets", scene.imagePath)
-        : await placeholderImage(scene.sceneIndex);
+        : await placeholderImage(scene.sceneIndex, scene.heading, scene.description);
       imageFiles.push({
         name: `scene${i}.png`,
         bytes: new Uint8Array(await blob.arrayBuffer()),
