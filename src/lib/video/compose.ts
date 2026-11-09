@@ -7,9 +7,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/integrations/supabase/types";
 import type { Mood } from "@/lib/storyboard";
 
-const FFMPEG_VERSION = "0.12.15";
 const CORE_BASE = "https://unpkg.com/@ffmpeg/core@0.12.10/dist/umd";
-const WORKER_URL = `https://unpkg.com/@ffmpeg/ffmpeg@${FFMPEG_VERSION}/dist/umd/814.ffmpeg.js`;
 
 export interface ComposeSceneInput {
   sceneIndex: number;
@@ -39,13 +37,14 @@ async function loadFFmpeg(onProgress?: (r: number, l: string) => void): Promise<
     if (Number.isFinite(progress))
       onProgress?.(0.05 + 0.9 * Math.min(1, Math.max(0, progress)), "Encoding video");
   });
-  const [coreURL, wasmURL, classWorkerURL] = await Promise.all([
+  const [coreURL, wasmURL] = await Promise.all([
     toBlobURL(`${CORE_BASE}/ffmpeg-core.js`, "text/javascript"),
     toBlobURL(`${CORE_BASE}/ffmpeg-core.wasm`, "application/wasm"),
-    toBlobURL(WORKER_URL, "text/javascript"),
   ]);
   try {
-    await ffmpeg.load({ coreURL, wasmURL, classWorkerURL });
+    // Let Vite bundle FFmpeg's package ESM worker. The UMD worker cannot be
+    // loaded from a blob URL because it resolves its own modules relatively.
+    await ffmpeg.load({ coreURL, wasmURL });
     return ffmpeg;
   } catch (error) {
     ffmpeg.terminate();
@@ -53,7 +52,6 @@ async function loadFFmpeg(onProgress?: (r: number, l: string) => void): Promise<
   } finally {
     URL.revokeObjectURL(coreURL);
     URL.revokeObjectURL(wasmURL);
-    URL.revokeObjectURL(classWorkerURL);
   }
 }
 
