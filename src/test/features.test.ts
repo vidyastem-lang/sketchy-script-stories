@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { extractScriptText } from "@/lib/script-parse";
+import { sceneClipPaths } from "@/lib/video/scene-audio";
 import {
   assertStoryboardSceneCount,
   buildBasicScenes,
@@ -71,5 +72,21 @@ describe("basic no-AI scenes", () => {
     ]);
     expect(scenes.every((scene) => scene.imagePrompt === "NO_AI_FALLBACK")).toBe(true);
     expect(scenes.every((scene) => scene.dialogues.length === 0 && !scene.narration)).toBe(true);
+  });
+});
+
+describe("video voice tracks", () => {
+  it("keeps narration first, then dialogue in order, while skipping missing clips", () => {
+    expect(
+      sceneClipPaths("narration.mp3", [
+        { audio_path: "first-dialogue.mp3" },
+        { audio_path: null },
+        { audio_path: "second-dialogue.mp3" },
+      ]),
+    ).toEqual(["narration.mp3", "first-dialogue.mp3", "second-dialogue.mp3"]);
+  });
+
+  it("returns no voice tracks when none have been generated", () => {
+    expect(sceneClipPaths(null, [{ audio_path: null }])).toEqual([]);
   });
 });

@@ -368,8 +368,8 @@ export async function composeVideo(
     }
   }
 
-  // Scene durations & timeline. Veo clips carry their synchronized speech audio;
-  // older still-image scenes retain the optional separately generated voice tracks.
+  // Scene durations & timeline. Animation audio supplies ambience; narration and
+  // dialogue are separate voice tracks and must fit within their scene.
   const sceneDur: number[] = scenesSorted.map((_, i) => {
     const indexes = sceneClips[i];
     if (!indexes) throw new Error("Scene audio timeline is incomplete");
@@ -379,7 +379,10 @@ export async function composeVideo(
       return acc + clip.dur;
     }, 0);
     const animatedDuration = animationDurationByScene[i];
-    return Math.min(30, Math.max(3, animatedDuration ?? (indexes.length > 0 ? total + 0.9 : 4.5)));
+    return Math.min(
+      30,
+      Math.max(3, animatedDuration ?? 0, indexes.length > 0 ? total + 0.9 : 4.5),
+    );
   });
   const sceneStart: number[] = [];
   let cursor = 0;

@@ -51,6 +51,7 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import type { ComposeSceneInput } from "@/lib/video/compose";
+import { sceneClipPaths } from "@/lib/video/scene-audio";
 
 export const Route = createFileRoute("/_authenticated/video/$id")({
   head: () => ({
@@ -334,6 +335,35 @@ function Studio() {
         }));
       }
 
+      const scenesNeedingVoice = scenes.filter((scene) => {
+        const hasNarration = Boolean(scene.narration.trim());
+        const hasMissingNarration = hasNarration && !scene.audio_path;
+        const hasMissingDialogue = scene.dialogues.some(
+          (dialogue) => dialogue.line.trim() && !dialogue.audio_path,
+        );
+        return hasMissingNarration || hasMissingDialogue;
+      });
+      for (const [index, scene] of scenesNeedingVoice.entries()) {
+        setProgress({
+          ratio: 0.1 + (0.07 * (index + 1)) / scenesNeedingVoice.length,
+          label: `Generating voice tracks ${index + 1} of ${scenesNeedingVoice.length}`,
+        });
+        const generated = await voiceoverFn({ data: { sceneId: scene.id } });
+        scenes = scenes.map((current) =>
+          current.id === scene.id
+            ? {
+                ...current,
+                audio_path: generated.audio_path,
+                dialogues: current.dialogues.map((dialogue, dialogueIndex) => ({
+                  ...dialogue,
+                  audio_path: generated.dialogueAudio[String(dialogueIndex)] ?? null,
+                })),
+              }
+            : current,
+        );
+        invalidate();
+      }
+
       setVideoUrl(null);
       const animatedPaths = new Map<string, string>();
       const pending: {
@@ -345,7 +375,7 @@ function Studio() {
 
       for (const [index, scene] of (basicMode ? [] : scenes).entries()) {
         setProgress({
-          ratio: 0.1 + (0.08 * index) / scenes.length,
+          ratio: 0.17 + (0.06 * index) / scenes.length,
           label: `Preparing animation ${index + 1} of ${scenes.length}`,
         });
         const started = await startAnimationFn({ data: { videoId: video.id, sceneId: scene.id } });
@@ -396,7 +426,7 @@ function Studio() {
         );
         const fraction = (completedJobs + inFlightProgress / 100) / scenes.length;
         setProgress({
-          ratio: 0.1 + 0.58 * Math.min(1, fraction),
+          ratio: 0.17 + 0.51 * Math.min(1, fraction),
           label: `Animating characters · ${completedJobs} of ${scenes.length} scenes ready`,
         });
         for (let i = pending.length - 1; i >= 0; i--) {
@@ -411,7 +441,7 @@ function Studio() {
         heading: s.heading ?? `Scene ${s.scene_index + 1}`,
         description: s.description,
         videoPath: animatedPaths.get(s.id) ?? null,
-        clipPaths: [],
+        clipPaths: sceneClipPaths(s.audio_path, s.dialogues),
       }));
       const result = await composeVideo(supabase, video.id, inputs, {
         resolution: video.resolution,
