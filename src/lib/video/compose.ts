@@ -15,6 +15,7 @@ export interface ComposeSceneInput {
   heading?: string | null;
   description?: string;
   videoPath?: string | null;
+  topicImageSearch?: boolean;
   clipPaths: string[]; // narration first, then dialogue clips in order
 }
 
@@ -34,6 +35,95 @@ export interface ComposeResult {
 
 const FPS = 24;
 const SCENE_TRANSITION_SECONDS = 0.45;
+
+interface TopicPhoto {
+  blob: Blob;
+  attribution: string;
+}
+
+interface OpenverseImageResult {
+  title?: string;
+  creator?: string;
+  license?: string;
+  license_version?: string;
+  license_url?: string;
+  foreign_landing_url?: string;
+  thumbnail?: string;
+  width?: number;
+  height?: number;
+  mature?: boolean;
+}
+
+const topicPhotoCache = new Map<string, Promise<TopicPhoto | null>>();
+
+function findTopicPhoto(query: string): Promise<TopicPhoto | null> {
+  const normalizedQuery = query.replace(/\s+/g, " ").trim().slice(0, 180);
+  if (!normalizedQuery) return Promise.resolve(null);
+  const cached = topicPhotoCache.get(normalizedQuery);
+  if (cached) return cached;
+
+  const request = (async (): Promise<TopicPhoto | null> => {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 8_000);
+    try {
+      const endpoint = new URL("https://api.openverse.org/v1/images/");
+      endpoint.searchParams.set("q", normalizedQuery);
+      endpoint.searchParams.set("page_size", "6");
+      endpoint.searchParams.set("license", "cc0,pdm,by");
+      endpoint.searchParams.set("mature", "false");
+      const response = await fetch(endpoint, {
+        headers: { Accept: "application/json" },
+        credentials: "omit",
+        signal: controller.signal,
+      });
+      if (!response.ok) return null;
+      const payload = (await response.json()) as { results?: OpenverseImageResult[] };
+      const candidate = (payload.results ?? [])
+        .filter(
+          (item) =>
+            item.mature !== true &&
+            typeof item.thumbnail === "string" &&
+            typeof item.license === "string" &&
+            ["cc0", "pdm", "by"].includes(item.license) &&
+            typeof item.license_url === "string",
+        )
+        .sort((a, b) => {
+          const aspectA = Math.abs((a.width ?? 1) / Math.max(a.height ?? 1, 1) - 16 / 9);
+          const aspectB = Math.abs((b.width ?? 1) / Math.max(b.height ?? 1, 1) - 16 / 9);
+          return aspectA - aspectB;
+        })[0];
+      if (!candidate?.thumbnail) return null;
+
+      const thumbnailUrl = new URL(candidate.thumbnail);
+      if (thumbnailUrl.protocol !== "https:" || thumbnailUrl.hostname !== "api.openverse.org")
+        return null;
+      const imageResponse = await fetch(thumbnailUrl, {
+        credentials: "omit",
+        signal: controller.signal,
+      });
+      if (!imageResponse.ok) return null;
+      const blob = await imageResponse.blob();
+      if (!blob.type.startsWith("image/") || blob.size > 1_500_000) return null;
+
+      const sourceHost = candidate.foreign_landing_url
+        ? new URL(candidate.foreign_landing_url).hostname
+        : "Openverse";
+      const licenseCode = candidate.license ?? "cc0";
+      const license = `${licenseCode.toUpperCase()}${candidate.license_version ? ` ${candidate.license_version}` : ""}`;
+      const attribution = `Photo: “${candidate.title || "Untitled"}” by ${candidate.creator || "creator unknown"} · ${license} · ${sourceHost} · ${candidate.license_url}`;
+      return { blob, attribution };
+    } catch {
+      return null;
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  })();
+  topicPhotoCache.set(normalizedQuery, request);
+  void request.then((photo) => {
+    if (!photo) topicPhotoCache.delete(normalizedQuery);
+  });
+  return request;
+}
 
 async function loadFFmpeg(onProgress?: (r: number, l: string) => void): Promise<FFmpeg> {
   const ffmpeg = new FFmpeg();
@@ -67,11 +157,12 @@ async function downloadAsset(
   return data;
 }
 
-function placeholderImage(
+async function placeholderImage(
   index: number,
   heading?: string | null,
   description?: string,
   totalScenes = index + 1,
+  photo?: TopicPhoto | null,
 ): Promise<Blob> {
   const canvas = document.createElement("canvas");
   canvas.width = 1536;
@@ -88,11 +179,26 @@ function placeholderImage(
     ["#263226", "#465942", "#d4dc91"],
   ];
   const palette = palettes[index % palettes.length] ?? palettes[0]!;
-  const background = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
-  background.addColorStop(0, palette[0]!);
-  background.addColorStop(1, palette[1]!);
-  ctx.fillStyle = background;
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  if (photo) {
+    const bitmap = await createImageBitmap(photo.blob);
+    const scale = Math.max(canvas.width / bitmap.width, canvas.height / bitmap.height);
+    const width = bitmap.width * scale;
+    const height = bitmap.height * scale;
+    ctx.drawImage(bitmap, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height);
+    bitmap.close();
+    const overlay = ctx.createLinearGradient(0, 0, canvas.width, 0);
+    overlay.addColorStop(0, "rgba(10,15,29,0.94)");
+    overlay.addColorStop(0.58, "rgba(10,15,29,0.72)");
+    overlay.addColorStop(1, "rgba(10,15,29,0.28)");
+    ctx.fillStyle = overlay;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  } else {
+    const background = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
+    background.addColorStop(0, palette[0]!);
+    background.addColorStop(1, palette[1]!);
+    ctx.fillStyle = background;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
 
   const glow = ctx.createRadialGradient(1220, 170, 20, 1220, 170, 720);
   glow.addColorStop(0, `${palette[2]}44`);
@@ -181,6 +287,15 @@ function placeholderImage(
   descriptionLines.forEach((line, lineIndex) =>
     ctx.fillText(line, left + 40, descriptionY + lineIndex * 55),
   );
+
+  if (photo) {
+    ctx.fillStyle = "rgba(0,0,0,0.42)";
+    ctx.fillRect(left + 28, 662, 1260, 48);
+    ctx.font = "500 14px system-ui, sans-serif";
+    ctx.fillStyle = "rgba(255,255,255,0.84)";
+    const creditLines = wrap(photo.attribution, "500 14px system-ui, sans-serif", 1230, 2);
+    creditLines.forEach((line, lineIndex) => ctx.fillText(line, left + 38, 675 + lineIndex * 16));
+  }
 
   ctx.fillStyle = "rgba(255,255,255,0.18)";
   ctx.fillRect(left + 38, 722, 1240, 2);
@@ -425,6 +540,14 @@ export async function composeVideo(
         dur,
       });
     } else {
+      let topicPhoto: TopicPhoto | null = null;
+      if (!scene.imagePath && scene.topicImageSearch) {
+        report(
+          0.02 + (0.035 * i) / scenesSorted.length,
+          `Finding a topic picture · scene ${i + 1} of ${scenesSorted.length}`,
+        );
+        topicPhoto = await findTopicPhoto(`${scene.heading ?? ""} ${scene.description ?? ""}`);
+      }
       const blob = scene.imagePath
         ? await downloadAsset(supabase, "scene-assets", scene.imagePath)
         : await placeholderImage(
@@ -432,6 +555,7 @@ export async function composeVideo(
             scene.heading,
             scene.description,
             scenesSorted.length,
+            topicPhoto,
           );
       imageFiles.push({
         name: `scene${i}.png`,

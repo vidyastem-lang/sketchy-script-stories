@@ -451,6 +451,7 @@ function Studio() {
         heading: s.heading ?? `Scene ${s.scene_index + 1}`,
         description: s.description,
         videoPath: animatedPaths.get(s.id) ?? null,
+        topicImageSearch: basicMode,
         clipPaths: sceneClipPaths(s.audio_path, s.dialogues),
       }));
       const result = await composeVideo(supabase, video.id, inputs, {
@@ -707,6 +708,15 @@ function Studio() {
                 </Button>
               </div>
             </div>
+
+            {basicMode && (
+              <p className="mt-3 max-w-3xl text-xs leading-relaxed text-muted-foreground">
+                Basic mode searches Openverse using each scene title and description for a related
+                openly licensed picture. Image credits and license details appear on the scene card;
+                if no picture is available, StoryReel uses its designed text card instead. This uses
+                moving still images, not AI lip-sync or talking characters.
+              </p>
+            )}
 
             {progress && (
               <Card className="mt-6 border-primary/40">
