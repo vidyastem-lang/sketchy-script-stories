@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { extractScriptText } from "@/lib/script-parse";
 import { sceneClipPaths } from "@/lib/video/scene-audio";
+import { calculateSceneTimeline } from "@/lib/video/timeline";
 import {
   assertStoryboardSceneCount,
   buildBasicScenes,
@@ -98,5 +99,29 @@ describe("topic-relevant AI video scenes", () => {
     expect(STORYBOARD_SYSTEM_PROMPT).toContain("topic-relevant location");
     expect(STORYBOARD_SYSTEM_PROMPT).toContain("scenery and props evolve with the story");
     expect(STORYBOARD_SYSTEM_PROMPT).toContain("Every scene needs narration, dialogue, or both");
+  });
+});
+
+describe("basic video transition timing", () => {
+  it("overlaps scenes and keeps narration starts aligned with visual transitions", () => {
+    expect(calculateSceneTimeline([4, 4, 4], 0.5)).toEqual({
+      starts: [0, 3.5, 7],
+      totalDuration: 11,
+      transitionDuration: 0.5,
+    });
+  });
+
+  it("does not subtract a transition for a single scene", () => {
+    expect(calculateSceneTimeline([5], 0.5)).toEqual({
+      starts: [0],
+      totalDuration: 5,
+      transitionDuration: 0,
+    });
+  });
+
+  it("rejects invalid scene durations", () => {
+    expect(() => calculateSceneTimeline([3, 0], 0.45)).toThrow(
+      "Every scene duration must be a positive finite number",
+    );
   });
 });

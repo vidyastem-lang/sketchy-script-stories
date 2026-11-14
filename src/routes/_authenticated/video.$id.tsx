@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { z } from "zod";
@@ -491,8 +491,13 @@ function Studio() {
             queryClient.invalidateQueries({ queryKey: ["video", id] }),
           ]);
           toast.info(
-            "AI Gateway credits are unavailable. Switched this video to basic no-AI scenes; click Render basic video to finish.",
+            "AI Gateway credits are unavailable. Switched to basic scenes; finishing a local video render now.",
           );
+          // The automatic render guard has already fired for this page. Reload the same
+          // project with autoGenerate enabled so the new basic scenes are rendered once.
+          window.setTimeout(() => {
+            window.location.assign(`${window.location.pathname}?autoGenerate=true`);
+          }, 900);
           return;
         } catch (fallbackError) {
           console.error("Could not switch to the basic no-AI workflow:", fallbackError);
@@ -579,7 +584,7 @@ function Studio() {
   });
 
   const video = videoQ.data;
-  const scenes = scenesQ.data ?? [];
+  const scenes = useMemo(() => scenesQ.data ?? [], [scenesQ.data]);
   const basicMode =
     scenes.length > 0 && scenes.every((scene) => scene.image_prompt === "NO_AI_FALLBACK");
   const cast = castQ.data ?? [];

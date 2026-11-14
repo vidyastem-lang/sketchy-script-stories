@@ -5,6 +5,7 @@ import { FFmpeg } from "@ffmpeg/ffmpeg";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/integrations/supabase/types";
 import type { Mood } from "@/lib/storyboard";
+import { calculateSceneTimeline } from "@/lib/video/timeline";
 
 const CORE_BASE = "https://unpkg.com/@ffmpeg/core@0.12.10/dist/esm";
 
@@ -32,6 +33,7 @@ export interface ComposeResult {
 }
 
 const FPS = 24;
+const SCENE_TRANSITION_SECONDS = 0.45;
 
 async function loadFFmpeg(onProgress?: (r: number, l: string) => void): Promise<FFmpeg> {
   const ffmpeg = new FFmpeg();
@@ -69,38 +71,127 @@ function placeholderImage(
   index: number,
   heading?: string | null,
   description?: string,
+  totalScenes = index + 1,
 ): Promise<Blob> {
   const canvas = document.createElement("canvas");
   canvas.width = 1536;
-  canvas.height = 1024;
-  const ctx = canvas.getContext("2d")!;
-  const g = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
-  g.addColorStop(0, "#1b1f3a");
-  g.addColorStop(1, "#2c3f66");
-  ctx.fillStyle = g;
+  canvas.height = 864;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Could not prepare a basic scene card");
+
+  const palettes = [
+    ["#111827", "#263b5a", "#f4bd70"],
+    ["#142b36", "#27505a", "#79d2c1"],
+    ["#241d3d", "#45396c", "#d9a7ff"],
+    ["#2c2020", "#634033", "#ffc17c"],
+    ["#102a43", "#28527a", "#86c5ff"],
+    ["#263226", "#465942", "#d4dc91"],
+  ];
+  const palette = palettes[index % palettes.length] ?? palettes[0]!;
+  const background = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
+  background.addColorStop(0, palette[0]!);
+  background.addColorStop(1, palette[1]!);
+  ctx.fillStyle = background;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = "rgba(240, 200, 120, 0.85)";
-  ctx.textAlign = "center";
+
+  const glow = ctx.createRadialGradient(1220, 170, 20, 1220, 170, 720);
+  glow.addColorStop(0, `${palette[2]}44`);
+  glow.addColorStop(1, `${palette[2]}00`);
+  ctx.fillStyle = glow;
+  ctx.fillRect(500, 0, 1036, 760);
+
+  // Layered abstract scenery adds depth without external assets or AI calls.
+  ctx.save();
+  ctx.globalAlpha = 0.16;
+  ctx.strokeStyle = palette[2]!;
+  ctx.lineWidth = 2;
+  for (let ring = 0; ring < 6; ring++) {
+    ctx.beginPath();
+    ctx.arc(1240, 430, 120 + ring * 82, -1.2, 1.35);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 0.12;
+  ctx.fillStyle = palette[2]!;
+  for (let dot = 0; dot < 28; dot++) {
+    const x = 980 + ((dot * 137) % 500);
+    const y = 90 + ((dot * 83) % 590);
+    ctx.beginPath();
+    ctx.arc(x, y, dot % 4 === 0 ? 4 : 2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+
+  const left = 148;
+  const right = 1110;
+  ctx.fillStyle = palette[2]!;
+  ctx.fillRect(left, 136, 7, 524);
+  ctx.textAlign = "left";
   ctx.textBaseline = "middle";
-  ctx.font = "600 70px Manrope, sans-serif";
-  ctx.fillText((heading || `Scene ${index + 1}`).slice(0, 48), canvas.width / 2, 340);
-  if (description?.trim()) {
-    ctx.fillStyle = "rgba(255, 255, 255, 0.92)";
-    ctx.font = "400 38px Manrope, sans-serif";
-    const words = description.trim().split(/\s+/);
+  ctx.fillStyle = palette[2]!;
+  ctx.font = "700 24px system-ui, sans-serif";
+  ctx.fillText(`STORYREEL  /  SCENE ${String(index + 1).padStart(2, "0")}`, left + 38, 150);
+
+  const wrap = (text: string, font: string, maxWidth: number, maxLines: number) => {
+    ctx.font = font;
+    const words = text.trim().split(/\s+/).filter(Boolean);
     const lines: string[] = [];
     let line = "";
-    for (const word of words) {
+    let truncated = false;
+    for (const [wordIndex, word] of words.entries()) {
       const candidate = line ? `${line} ${word}` : word;
-      if (ctx.measureText(candidate).width > canvas.width * 0.78 && line) {
+      if (ctx.measureText(candidate).width > maxWidth && line) {
         lines.push(line);
         line = word;
-      } else line = candidate;
-      if (lines.length >= 5) break;
+        if (lines.length === maxLines && wordIndex < words.length - 1) {
+          truncated = true;
+          break;
+        }
+      } else {
+        line = candidate;
+      }
     }
-    if (line && lines.length < 5) lines.push(line);
-    lines.forEach((text, lineIndex) => ctx.fillText(text, canvas.width / 2, 445 + lineIndex * 54));
-  }
+    if (line && lines.length < maxLines) lines.push(line);
+    if (truncated && lines.length > 0) {
+      const last = lines.length - 1;
+      const current = lines[last] ?? "";
+      let clipped = current;
+      while (clipped && ctx.measureText(`${clipped}…`).width > maxWidth)
+        clipped = clipped.slice(0, -1);
+      lines[last] = `${clipped}…`;
+    }
+    return lines;
+  };
+
+  const title = (heading || `Scene ${index + 1}`).trim();
+  const titleFont = "700 76px system-ui, sans-serif";
+  const titleLines = wrap(title, titleFont, right - left - 88, 2);
+  ctx.font = titleFont;
+  ctx.fillStyle = "#fffaf0";
+  titleLines.forEach((line, lineIndex) => ctx.fillText(line, left + 38, 260 + lineIndex * 92));
+
+  const descriptionLines = wrap(
+    description || "A new moment in the story unfolds.",
+    "400 36px system-ui, sans-serif",
+    right - left - 104,
+    4,
+  );
+  ctx.font = "400 36px system-ui, sans-serif";
+  ctx.fillStyle = "rgba(255, 250, 240, 0.82)";
+  const descriptionY = 400 + Math.max(0, titleLines.length - 1) * 84;
+  descriptionLines.forEach((line, lineIndex) =>
+    ctx.fillText(line, left + 40, descriptionY + lineIndex * 55),
+  );
+
+  ctx.fillStyle = "rgba(255,255,255,0.18)";
+  ctx.fillRect(left + 38, 722, 1240, 2);
+  ctx.fillStyle = palette[2]!;
+  ctx.fillRect(left + 38, 722, (1240 * (index + 1)) / Math.max(totalScenes, 1), 4);
+  ctx.fillStyle = "rgba(255,255,255,0.64)";
+  ctx.font = "500 20px system-ui, sans-serif";
+  ctx.fillText("A story told one scene at a time", left + 38, 780);
+  ctx.textAlign = "right";
+  ctx.fillText(String(index + 1).padStart(2, "0"), 1378, 780);
+
   return new Promise((resolve) => canvas.toBlob((b) => resolve(b!), "image/png"));
 }
 
@@ -311,7 +402,7 @@ export async function composeVideo(
   if (scenesSorted.length === 0) throw new Error("There are no scenes to export");
   const report = (r: number, l: string) => opts.onProgress?.(r, l);
 
-  report(0.01, "Downloading animated scenes");
+  report(0.01, "Preparing scene visuals");
   const imageFiles: { name: string; bytes: Uint8Array; sceneIdx: number }[] = [];
   const animationFiles: {
     name: string;
@@ -336,7 +427,12 @@ export async function composeVideo(
     } else {
       const blob = scene.imagePath
         ? await downloadAsset(supabase, "scene-assets", scene.imagePath)
-        : await placeholderImage(scene.sceneIndex, scene.heading, scene.description);
+        : await placeholderImage(
+            scene.sceneIndex,
+            scene.heading,
+            scene.description,
+            scenesSorted.length,
+          );
       imageFiles.push({
         name: `scene${i}.png`,
         bytes: new Uint8Array(await blob.arrayBuffer()),
@@ -381,13 +477,10 @@ export async function composeVideo(
     const animatedDuration = animationDurationByScene[i];
     return Math.min(30, Math.max(3, animatedDuration ?? 0, indexes.length > 0 ? total + 0.9 : 4.5));
   });
-  const sceneStart: number[] = [];
-  let cursor = 0;
-  for (const d of sceneDur) {
-    sceneStart.push(cursor);
-    cursor += d;
-  }
-  const totalSec = cursor;
+  const timeline = calculateSceneTimeline(sceneDur, SCENE_TRANSITION_SECONDS);
+  const sceneStart = timeline.starts;
+  const transitionDuration = timeline.transitionDuration;
+  const totalSec = timeline.totalDuration;
 
   // Background music
   const bgm = opts.bgmEnabled ? await generateBgm(opts.mood, totalSec) : null;
@@ -429,8 +522,8 @@ export async function composeVideo(
     if (bgm) args.push("-i", "bgm.wav");
 
     // Build normalized video and audio filter graphs using explicit input indexes.
-    const IW = Math.round(W * 1.35);
-    const IH = Math.round(H * 1.35);
+    const IW = Math.round(W * 1.06);
+    const IH = Math.round(H * 1.06);
     const parts: string[] = [];
     const vLabels: string[] = [];
     scenesSorted.forEach((_, i) => {
@@ -440,7 +533,7 @@ export async function composeVideo(
       if (animationFileIndex >= 0) {
         const inputIndex = imageFiles.length + animationFileIndex;
         parts.push(
-          `[${inputIndex}:v]fps=${FPS},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,tpad=stop_mode=clone:stop_duration=${duration.toFixed(3)},trim=duration=${duration.toFixed(3)},setpts=PTS-STARTPTS[v${i}]`,
+          `[${inputIndex}:v]fps=${FPS},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,format=yuv420p,settb=AVTB,tpad=stop_mode=clone:stop_duration=${duration.toFixed(3)},trim=duration=${duration.toFixed(3)},setpts=PTS-STARTPTS[v${i}]`,
         );
         vLabels.push(`[v${i}]`);
         return;
@@ -449,26 +542,46 @@ export async function composeVideo(
       if (imageFileIndex < 0)
         throw new Error("A scene has neither an animated clip nor a fallback image");
       const frames = Math.max(1, Math.round(duration * FPS));
-      const rate = (0.22 / frames).toFixed(6);
+      const rate = (0.08 / frames).toFixed(6);
       let motion: string;
-      switch (i % 3) {
+      switch (i % 4) {
         case 0:
-          motion = `z='min(1+${rate}*on,1.22)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
+          motion = `z='min(1+${rate}*on,1.08)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
           break;
         case 1:
-          motion = `z='1.18':x='(iw-iw/zoom)*min(1\\,on/${frames})':y='ih/2-(ih/zoom/2)'`;
+          motion = `z='1.08':x='(iw-iw/zoom)*min(1\\,on/${frames})':y='ih/2-(ih/zoom/2)'`;
+          break;
+        case 2:
+          motion = `z='max(1.08-${rate}*on,1.0)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
           break;
         default:
-          motion = `z='max(1.22-${rate}*on,1.0)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
+          motion = `z='1.06':x='iw/2-(iw/zoom/2)':y='(ih-ih/zoom)*min(1\\,on/${frames})'`;
       }
       parts.push(
-        `[${imageFileIndex}:v]scale=${IW}:${IH}:force_original_aspect_ratio=increase,crop=${IW}:${IH},zoompan=${motion}:d=1:s=${W}x${H}:fps=${FPS},setsar=1[v${i}]`,
+        `[${imageFileIndex}:v]scale=${IW}:${IH}:force_original_aspect_ratio=increase,crop=${IW}:${IH},zoompan=${motion}:d=1:s=${W}x${H}:fps=${FPS},setsar=1,format=yuv420p,settb=AVTB,setpts=PTS-STARTPTS,trim=duration=${duration.toFixed(3)}[v${i}]`,
       );
       vLabels.push(`[v${i}]`);
     });
+    let combinedVideo = vLabels[0];
+    let combinedDuration = sceneDur[0];
+    if (!combinedVideo || combinedDuration === undefined)
+      throw new Error("The video timeline has no first scene");
+    const transitionStyles = ["fade", "smoothleft", "wipeleft", "circleopen"];
+    for (let index = 1; index < vLabels.length; index++) {
+      const nextVideo = vLabels[index];
+      const nextDuration = sceneDur[index];
+      if (!nextVideo || nextDuration === undefined)
+        throw new Error("A video scene is missing from the transition timeline");
+      const outputLabel = index === vLabels.length - 1 ? "vcat" : `vx${index}`;
+      const style = transitionStyles[(index - 1) % transitionStyles.length] ?? "fade";
+      parts.push(
+        `${combinedVideo}${nextVideo}xfade=transition=${style}:duration=${transitionDuration.toFixed(3)}:offset=${Math.max(0, combinedDuration - transitionDuration).toFixed(3)}[${outputLabel}]`,
+      );
+      combinedVideo = `[${outputLabel}]`;
+      combinedDuration += nextDuration - transitionDuration;
+    }
     parts.push(
-      `${vLabels.join("")}concat=n=${scenesSorted.length}:v=1:a=0[vcat]`,
-      `[vcat]fade=t=in:st=0:d=0.5,fade=t=out:st=${Math.max(0, totalSec - 1.2).toFixed(2)}:d=1.2,format=yuv420p[vout]`,
+      `${combinedVideo}fade=t=in:st=0:d=0.45,fade=t=out:st=${Math.max(0, totalSec - 0.8).toFixed(2)}:d=0.8,format=yuv420p[vout]`,
     );
 
     // Audio chain
