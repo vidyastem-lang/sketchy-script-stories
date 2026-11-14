@@ -505,6 +505,13 @@ export const startSceneAnimation = createServerFn({ method: "POST" })
     const dialogues = dialogueRowsSchema
       .parse(scene.dialogues ?? [])
       .filter((item) => item.line.trim());
+    const spokenLines = [
+      scene.narration.trim()
+        ? `Narrator (off-screen): ${JSON.stringify(scene.narration.trim())}`
+        : "",
+      ...dialogues.map((item) => `${item.character}: ${JSON.stringify(item.line.trim())}`),
+    ].filter(Boolean);
+    const spokenLanguage = languagePrompt(video.language);
     const prompt = [
       "Animate the supplied artwork as the exact opening frame of one continuous 8-second cinematic shot.",
       `Visual style: ${stylePrompt(video.style)}.`,
@@ -512,7 +519,9 @@ export const startSceneAnimation = createServerFn({ method: "POST" })
       `Visual direction: ${scene.image_prompt}`,
       `Character designs to preserve: ${castDescriptions || "preserve every visible character from the reference image"}.`,
       "Use natural, smooth body and facial movement with a steady cinematic camera. Preserve character identity, clothing, colors, composition, and setting. No cuts, captions, written text, or logos.",
-      "Generate subtle natural ambient sound only. Do not include intelligible speech, dialogue, vocals, or lyrics; the finished video adds its narration and dialogue as separate voice tracks.",
+      spokenLines.length
+        ? `Generate spoken audio in ${spokenLanguage}. Perform these lines in order, with visible mouth movement synchronized to the active speaker; keep listeners' mouths still: ${spokenLines.join("; ")}`
+        : `Generate subtle natural ambience only; there is no spoken dialogue. Language context: ${spokenLanguage}.`,
     ].join("\n");
     const fingerprint = await animationFingerprint(imageBytes, prompt);
     const folder = `${userId}/${video.id}`;

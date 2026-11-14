@@ -476,17 +476,6 @@ export async function composeVideo(
 
     // Audio chain
     const aLabels: string[] = [];
-    animationFiles.forEach((file, k) => {
-      const start = sceneStart[file.sceneIdx];
-      const duration = sceneDur[file.sceneIdx];
-      if (start === undefined || duration === undefined)
-        throw new Error("Animated scene audio has no matching timeline");
-      const inputIndex = imageFiles.length + k;
-      parts.push(
-        `[${inputIndex}:a:0]aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo,adelay=${Math.round(start * 1000)}:all=1,apad=whole_dur=${totalSec.toFixed(3)},atrim=0:${totalSec.toFixed(3)}[aanim${k}]`,
-      );
-      aLabels.push(`[aanim${k}]`);
-    });
     clipFiles.forEach((f, k) => {
       const start = sceneStart[f.sceneIdx];
       const sceneClipIndexes = sceneClips[f.sceneIdx];
