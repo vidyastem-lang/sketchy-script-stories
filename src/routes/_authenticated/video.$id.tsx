@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { z } from "zod";
@@ -54,6 +54,7 @@ import type { ComposeSceneInput } from "@/lib/video/compose";
 import { sceneClipPaths } from "@/lib/video/scene-audio";
 
 export const Route = createFileRoute("/_authenticated/video/$id")({
+  validateSearch: z.object({ autoGenerate: z.coerce.boolean().optional() }),
   head: () => ({
     meta: [
       { title: "Video studio — StoryReel" },
@@ -146,8 +147,16 @@ function describeExportError(error: unknown): string {
   return "The renderer returned no error details. Check the browser console and try again.";
 }
 
+function isGatewayPaymentError(error: unknown): boolean {
+  const message = describeExportError(error).toLowerCase();
+  return (
+    message.includes("ai gateway") && (message.includes("payment") || message.includes("credit"))
+  );
+}
+
 function Studio() {
   const { id } = Route.useParams();
+  const { autoGenerate } = Route.useSearch();
   const queryClient = useQueryClient();
   const storyboardFn = useServerFn(generateStoryboard);
   const characterArtFn = useServerFn(generateCharacterArt);
@@ -159,6 +168,7 @@ function Studio() {
   const [progress, setProgress] = useState<{ ratio: number; label: string } | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [busyStep, setBusyStep] = useState<string | null>(null);
+  const autoGenerateStarted = useRef(false);
 
   useEffect(() => {
     return () => {
@@ -472,6 +482,22 @@ function Studio() {
     } catch (err) {
       invalidate();
       console.error("Video export failed:", err);
+      if (!basicMode && isGatewayPaymentError(err)) {
+        try {
+          await storyboardFn({ data: { videoId: video.id, replace: true, useAi: false } });
+          await Promise.all([
+            queryClient.invalidateQueries({ queryKey: ["scenes", id] }),
+            queryClient.invalidateQueries({ queryKey: ["cast", id] }),
+            queryClient.invalidateQueries({ queryKey: ["video", id] }),
+          ]);
+          toast.info(
+            "AI Gateway credits are unavailable. Switched this video to basic no-AI scenes; click Render basic video to finish.",
+          );
+          return;
+        } catch (fallbackError) {
+          console.error("Could not switch to the basic no-AI workflow:", fallbackError);
+        }
+      }
       const message = describeExportError(err);
       toast.error(message.length > 500 ? `${message.slice(0, 497)}…` : message);
     } finally {
@@ -559,6 +585,22 @@ function Studio() {
   const cast = castQ.data ?? [];
   const playbackUrl = videoUrl ?? savedPlaybackUrlQ.data;
   const downloadUrl = videoUrl ?? savedDownloadUrlQ.data;
+  const autoGenerateExport = useRef<() => Promise<void>>(async () => {});
+  autoGenerateExport.current = composeAndExport;
+
+  useEffect(() => {
+    if (
+      !autoGenerate ||
+      autoGenerateStarted.current ||
+      !videoQ.isSuccess ||
+      !scenesQ.isSuccess ||
+      scenes.length === 0 ||
+      video?.status === "ready"
+    )
+      return;
+    autoGenerateStarted.current = true;
+    void autoGenerateExport.current();
+  }, [autoGenerate, scenes, scenesQ.isSuccess, video?.status, videoQ.isSuccess]);
 
   return (
     <div className="min-h-screen bg-background">
@@ -836,6 +878,35 @@ function CharacterImage({ path }: { path: string }) {
   );
 }
 
+function AudioPreview({ path, label }: { path: string; label: string }) {
+  const [url, setUrl] = useState<string | null | undefined>(undefined);
+
+  useEffect(() => {
+    let cancelled = false;
+    setUrl(undefined);
+    void getStorageSignedUrl("scene-assets", path).then((signedUrl) => {
+      if (!cancelled) setUrl(signedUrl);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [path]);
+
+  if (url === undefined)
+    return (
+      <span className="mt-1 block text-xs text-muted-foreground">
+        Loading {label.toLowerCase()}…
+      </span>
+    );
+  if (!url)
+    return (
+      <span role="status" className="mt-1 block text-xs text-destructive">
+        {label} unavailable
+      </span>
+    );
+  return <audio controls preload="none" src={url} aria-label={label} className="mt-1 h-9 w-full" />;
+}
+
 function SceneCard({
   scene,
   basicMode,
@@ -975,18 +1046,28 @@ function SceneCard({
               )}
             </div>
 
+            {scene.audio_path && (
+              <div className="mt-2">
+                <AudioPreview path={scene.audio_path} label="Narration audio preview" />
+              </div>
+            )}
+
             {scene.dialogues.length > 0 && (
               <ul className="mt-3 space-y-1.5">
                 {scene.dialogues.map((d, i) => (
                   <li key={i} className="flex items-start gap-2 text-sm">
                     <Label className="mt-0.5 shrink-0 text-xs text-accent">{d.character}</Label>
-                    <span className="min-w-0 flex-1">
-                      {d.line}{" "}
-                      {d.emotion && (
-                        <span className="text-xs text-muted-foreground">({d.emotion})</span>
+                    <div className="min-w-0 flex-1">
+                      <p>
+                        {d.line}{" "}
+                        {d.emotion && (
+                          <span className="text-xs text-muted-foreground">({d.emotion})</span>
+                        )}
+                      </p>
+                      {d.audio_path && (
+                        <AudioPreview path={d.audio_path} label={`${d.character} dialogue audio`} />
                       )}
-                      {d.audio_path && <span className="ml-1 text-xs text-primary">♪</span>}
-                    </span>
+                    </div>
                   </li>
                 ))}
               </ul>

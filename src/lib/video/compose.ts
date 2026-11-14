@@ -379,10 +379,7 @@ export async function composeVideo(
       return acc + clip.dur;
     }, 0);
     const animatedDuration = animationDurationByScene[i];
-    return Math.min(
-      30,
-      Math.max(3, animatedDuration ?? 0, indexes.length > 0 ? total + 0.9 : 4.5),
-    );
+    return Math.min(30, Math.max(3, animatedDuration ?? 0, indexes.length > 0 ? total + 0.9 : 4.5));
   });
   const sceneStart: number[] = [];
   let cursor = 0;

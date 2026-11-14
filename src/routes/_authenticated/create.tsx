@@ -50,6 +50,15 @@ export const Route = createFileRoute("/_authenticated/create")({
   component: CreatePage,
 });
 
+function isGatewayPaymentError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("ai gateway") &&
+    (normalized.includes("payment") || normalized.includes("credit"))
+  );
+}
+
 function CreatePage() {
   const navigate = useNavigate();
   const storyboardFn = useServerFn(generateStoryboard);
@@ -83,10 +92,12 @@ function CreatePage() {
 
   async function handleSubmit() {
     if (content.trim().length < 12) {
-      toast.error("Give the AI a little more to work with — at least a sentence.");
+      toast.error("Add a little more to work with — at least a sentence.");
       return;
     }
     setBusy(true);
+    let createdVideoId: string | null = null;
+    let storyboardCompleted = false;
     try {
       const { data: sessionData } = await supabase.auth.getSession();
       let user = sessionData.session?.user ?? null;
@@ -117,10 +128,48 @@ function CreatePage() {
         .single();
       if (error || !video) throw error ?? new Error("Could not create the video");
 
+      createdVideoId = video.id;
       await storyboardFn({ data: { videoId: video.id, useAi } });
-      await navigate({ to: "/video/$id", params: { id: video.id } });
+      storyboardCompleted = true;
+      await navigate({
+        to: "/video/$id",
+        params: { id: video.id },
+        search: { autoGenerate: true },
+      });
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Storyboard generation failed");
+      let reportedError: unknown = err;
+      if (!storyboardCompleted && useAi && createdVideoId && isGatewayPaymentError(err)) {
+        try {
+          await storyboardFn({ data: { videoId: createdVideoId, useAi: false } });
+          storyboardCompleted = true;
+          toast.info("AI credits are unavailable. Created a basic no-AI video instead.");
+        } catch (fallbackError) {
+          console.error("Basic no-AI fallback failed:", fallbackError);
+          reportedError = fallbackError;
+        }
+      }
+      if (storyboardCompleted && createdVideoId) {
+        try {
+          await navigate({
+            to: "/video/$id",
+            params: { id: createdVideoId },
+            search: { autoGenerate: true },
+          });
+          return;
+        } catch (navigationError) {
+          reportedError = navigationError;
+        }
+      }
+      if (!storyboardCompleted && createdVideoId) {
+        const { error: cleanupError } = await supabase
+          .from("videos")
+          .delete()
+          .eq("id", createdVideoId);
+        if (cleanupError) console.error("Could not remove failed video draft:", cleanupError);
+      }
+      toast.error(
+        reportedError instanceof Error ? reportedError.message : "Storyboard generation failed",
+      );
       setBusy(false);
     }
   }
@@ -131,7 +180,9 @@ function CreatePage() {
       <main className="mx-auto max-w-3xl px-6 py-10">
         <h1 className="font-display text-3xl font-bold tracking-tight">Create a new video</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          The AI writes the screenplay, casts characters and breaks everything into scenes.
+          {useAi
+            ? "AI turns your topic into scene-specific artwork, animated characters, synchronized speech, and a finished video."
+            : "Your text becomes simple scene cards that you can render locally without AI services."}
         </p>
 
         <div className="mt-6 space-y-2">
@@ -314,14 +365,14 @@ function CreatePage() {
               ? "Writing the storyboard…"
               : "Preparing basic scenes…"
             : useAi
-              ? "Generate storyboard"
+              ? "Generate AI-animated video"
               : "Create basic video"}
         </Button>
         {busy && (
           <p className="mt-3 text-center text-sm text-muted-foreground">
             {useAi
-              ? "This usually takes 20–60 seconds. You'll land in the studio when it's done."
-              : "No AI services are called. You'll land in the studio to render the basic video."}
+              ? "The storyboard is followed by topic-based scene art, Veo character animation with speech, and final rendering. This may take several minutes."
+              : "No AI services are called. Your basic scene-card video will render in the browser."}
           </p>
         )}
       </main>

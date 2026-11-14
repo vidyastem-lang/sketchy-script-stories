@@ -198,6 +198,7 @@ export const generateStoryboard = createServerFn({ method: "POST" })
         .eq("video_id", data.videoId);
       if (castDeleteError)
         throw new Error("Could not replace the previous cast: " + castDeleteError.message);
+      await removeReplacedVideoAssets(supabase, userId, data.videoId, video.final_video_path);
     }
 
     // Characters: reuse library characters with the same name, else create.
@@ -335,11 +336,17 @@ export const generateSceneArt = createServerFn({ method: "POST" })
     const { supabase, userId } = context;
     const { data: scene, error } = await supabase
       .from("scenes")
-      .select("*, videos!inner(id, style, user_id)")
+      .select("*, videos!inner(id, title, source_text, style, user_id)")
       .eq("id", data.sceneId)
       .single();
     if (error || !scene) throw new Error("Scene not found");
-    const video = scene.videos as { id: string; style: string; user_id: string };
+    const video = scene.videos as {
+      id: string;
+      title: string;
+      source_text: string;
+      style: string;
+      user_id: string;
+    };
 
     const { data: casts, error: castsError } = await supabase
       .from("video_characters")
@@ -354,7 +361,7 @@ export const generateSceneArt = createServerFn({ method: "POST" })
       .filter(Boolean)
       .join("; ");
 
-    const prompt = `${stylePrompt(video.style)}. One cinematic 16:9 animated scene frame. Scene: ${scene.description}. Visual direction: ${scene.image_prompt}. Characters in this story: ${castLine || "none specified"}. Keep character designs consistent with their descriptions. No text, letters or watermarks.`;
+    const prompt = `${stylePrompt(video.style)}. Create one cinematic 16:9 animated-film frame for this exact story topic: ${video.title}. Source context: ${video.source_text.slice(0, 1800)}. Scene action: ${scene.description}. Scene-specific visual direction: ${scene.image_prompt}. Show a recognizable location/background and props that belong to this scene and topic; do not replace them with unrelated generic scenery. Characters in this story: ${castLine || "none specified"}. Keep visible character identity, clothing, colors, and appearance consistent with the descriptions. No text, letters or watermarks.`;
     const bytes = await generateImageBytes(prompt, "1536x1024");
 
     const path = `${userId}/${video.id}/scene-${scene.scene_index}.png`;
@@ -450,6 +457,45 @@ async function sceneAssetExists(
   return (data ?? []).some((object) => object.name === filename);
 }
 
+async function removeReplacedVideoAssets(
+  supabase: import("@supabase/supabase-js").SupabaseClient<Database>,
+  userId: string,
+  videoId: string,
+  finalVideoPath: string | null,
+): Promise<void> {
+  const folder = `${userId}/${videoId}`;
+  try {
+    const paths: string[] = [];
+    let offset = 0;
+    while (true) {
+      const { data, error } = await supabase.storage
+        .from("scene-assets")
+        .list(folder, { limit: 100, offset, sortBy: { column: "name", order: "asc" } });
+      if (error) throw error;
+      const objects = data ?? [];
+      paths.push(
+        ...objects
+          .filter((object) => object.id !== null)
+          .map((object) => `${folder}/${object.name}`),
+      );
+      if (objects.length < 100) break;
+      offset += objects.length;
+    }
+    for (let index = 0; index < paths.length; index += 100) {
+      const { error } = await supabase.storage
+        .from("scene-assets")
+        .remove(paths.slice(index, index + 100));
+      if (error) throw error;
+    }
+  } catch (error) {
+    console.warn("Could not completely remove replaced scene assets", error);
+  }
+  if (finalVideoPath) {
+    const { error } = await supabase.storage.from("final-videos").remove([finalVideoPath]);
+    if (error) console.warn("Could not remove the replaced final video", error);
+  }
+}
+
 async function saveVeoAnimation(
   supabase: import("@supabase/supabase-js").SupabaseClient<Database>,
   jobId: string,
@@ -518,9 +564,9 @@ export const startSceneAnimation = createServerFn({ method: "POST" })
       `Scene: ${scene.heading ? `${scene.heading}. ` : ""}${scene.description}`,
       `Visual direction: ${scene.image_prompt}`,
       `Character designs to preserve: ${castDescriptions || "preserve every visible character from the reference image"}.`,
-      "Use natural, smooth body and facial movement with a steady cinematic camera. Preserve character identity, clothing, colors, composition, and setting. No cuts, captions, written text, or logos.",
+      "Use natural, smooth body and facial movement with a steady cinematic camera. Preserve character identity, clothing, colors, composition, and the topic-specific setting from the reference frame. No cuts, captions, written text, or logos.",
       spokenLines.length
-        ? `Generate spoken audio in ${spokenLanguage}. Perform these lines in order, with visible mouth movement synchronized to the active speaker; keep listeners' mouths still: ${spokenLines.join("; ")}`
+        ? `Generate clear, intelligible spoken audio in ${spokenLanguage}, with voices prominent and no competing music. Speak only these lines verbatim and in order, using a distinct natural voice for each named character. Synchronize visible lip and facial movement to the active speaker; keep listeners' mouths still: ${spokenLines.join("; ")}`
         : `Generate subtle natural ambience only; there is no spoken dialogue. Language context: ${spokenLanguage}.`,
     ].join("\n");
     const fingerprint = await animationFingerprint(imageBytes, prompt);

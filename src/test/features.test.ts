@@ -9,6 +9,7 @@ import {
   LANGUAGES,
   languagePrompt,
   sceneCountFor,
+  STORYBOARD_SYSTEM_PROMPT,
 } from "@/lib/storyboard";
 
 describe("script upload", () => {
@@ -88,5 +89,14 @@ describe("video voice tracks", () => {
 
   it("returns no voice tracks when none have been generated", () => {
     expect(sceneClipPaths(null, [{ audio_path: null }])).toEqual([]);
+  });
+});
+
+describe("topic-relevant AI video scenes", () => {
+  it("requires topic-specific settings, scenery, coherent continuity, and speech in every scene", () => {
+    expect(STORYBOARD_SYSTEM_PROMPT).toContain("Preserve the user's actual topic");
+    expect(STORYBOARD_SYSTEM_PROMPT).toContain("topic-relevant location");
+    expect(STORYBOARD_SYSTEM_PROMPT).toContain("scenery and props evolve with the story");
+    expect(STORYBOARD_SYSTEM_PROMPT).toContain("Every scene needs narration, dialogue, or both");
   });
 });

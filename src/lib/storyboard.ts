@@ -258,10 +258,11 @@ export const STORYBOARD_SYSTEM_PROMPT = `You are a professional animation screen
 
 Rules:
 - Divide the content into the requested number of scenes. Pacing should fit the target duration: roughly 6-10 seconds of narration+dialogue per scene.
+- Preserve the user's actual topic, named people/places, subject, and key events; do not substitute unrelated generic scenery or invent a different premise.
+- Give every scene a concrete, topic-relevant location, background details, time/weather where useful, and visible action. Let scenery and props evolve with the story while maintaining continuity between adjacent scenes.
 - Keep character names, appearance and personality perfectly consistent across every scene.
-- imagePrompt must describe ONE 16:9 frame: who is visible, where, what they are doing, camera framing (wide/medium/close), lighting, mood. Mention characters by name. No text, letters or watermarks in the image.
-- narration is spoken by a narrator; dialogues are spoken by characters. Keep lines short and natural so they fit the pacing.
-- Every scene needs either narration, dialogue, or both.
+- imagePrompt must describe ONE detailed 16:9 animated-film frame tied to the exact scene: environment/background, foreground props, who is visible, what they are doing, camera framing, lighting and mood. Mention characters by name and repeat defining appearance details when visible. No text, letters or watermarks in the image.
+- Every scene needs narration, dialogue, or both. Keep spoken lines short, natural, intelligible, and faithful to the submitted topic; dialogue must be assigned to a listed character.
 - Use the requested language for title, narration, dialogues and description; keep character names recognizable.
 - For Hinglish, naturally code-switch between Hindi and English; write Hindi phrases in Devanagari and English words/phrases in Latin script. Keep the language conversational, not a line-by-line translation.`;
 

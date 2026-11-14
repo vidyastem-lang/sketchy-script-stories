@@ -15,6 +15,13 @@
       "when": 1793862946390,
       "tag": "0001_feature_policy_repairs",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794470500311,
+      "tag": "0002_video_character_insert_ownership",
+      "breakpoints": true
     }
   ]
 }
